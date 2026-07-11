@@ -1,0 +1,27 @@
+[package]
+name = "smeazy-pos-app"
+version = "2.4.0"
+edition = "2021"
+description = "SMEazy POS — Offline-first hospitality point of sale"
+
+# Empty [workspace] marks this crate as its own workspace root, so Cargo
+# stops walking up to ../Cargo.toml (the backend workspace). Without this,
+# `cargo tauri build` fails with "current package believes it's in a
+# workspace when it's not" because src-tauri sits inside the backend's
+# directory tree but has a completely separate dependency graph.
+[workspace]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri              = { version = "2", features = [] }
+tauri-plugin-shell = "2"
+tauri-plugin-dialog = "2"
+tauri-plugin-fs     = "2"
+serde              = { version = "1", features = ["derive"] }
+serde_json         = "1"
+
+[[bin]]
+name = "smeazy-pos-app"
+path = "src/main.rs"

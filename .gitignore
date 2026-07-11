@@ -1,0 +1,33 @@
+# Rust
+target/
+Cargo.lock
+
+# Environment
+.env
+.env.local
+.env.production
+
+# Frontend
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# Docker data
+docker/data/
+
+# sqlx offline mode cache
+.sqlx/

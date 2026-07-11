@@ -1,0 +1,6 @@
+This folder needs the backend binary, renamed to match the Windows target triple:
+
+    cargo build --release -p smeazy-api
+    copy target\release\smeazy-api.exe src-tauri\binaries\smeazy-api-x86_64-pc-windows-msvc.exe
+
+See UPGRADE-README.md section 6 for the full build walkthrough.

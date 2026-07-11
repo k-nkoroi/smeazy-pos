@@ -1,0 +1,82 @@
+name: Build SMEazy POS (Tauri)
+
+# Build a Windows desktop installer for SMEazy POS.
+# Triggers:
+#   - Manually (workflow_dispatch)
+#   - On every push of a version tag like v2.3.0 (also creates a GitHub Release)
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    permissions:
+      contents: write   # needed to create a Release when a tag is pushed
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # ── Toolchains ─────────────────────────────────────────────────────────
+      - name: Install Rust (stable, MSVC)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Cache cargo registry & target
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> target"
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      # ── Frontend deps ──────────────────────────────────────────────────────
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci
+
+      # ── Build the API sidecar with the Tauri target-triple suffix ─────────
+      # Tauri's externalBin expects the binary named  <name>-<target-triple>.exe
+      # i.e. binaries/smeazy-api-x86_64-pc-windows-msvc.exe
+      - name: Build API sidecar
+        run: |
+          cargo build --release -p smeazy-api --target x86_64-pc-windows-msvc
+          New-Item -ItemType Directory -Force -Path src-tauri/binaries | Out-Null
+          Copy-Item `
+            "target/x86_64-pc-windows-msvc/release/smeazy-api.exe" `
+            "src-tauri/binaries/smeazy-api-x86_64-pc-windows-msvc.exe" -Force
+        shell: pwsh
+
+      # ── Build the Tauri desktop app (bundles frontend + sidecar) ──────────
+      - name: Install Tauri CLI
+        run: cargo install tauri-cli --version "^2" --locked
+
+      - name: Build Tauri app
+        run: cargo tauri build
+        env:
+          # Frontend is built by tauri's beforeBuildCommand (npm run build)
+          CI: true
+
+      # ── Publish artifacts ──────────────────────────────────────────────────
+      - name: Upload installer artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: smeazy-pos-windows
+          path: |
+            src-tauri/target/release/bundle/nsis/*.exe
+            src-tauri/target/release/bundle/msi/*.msi
+          if-no-files-found: warn
+
+      - name: Attach installers to Release (on tag)
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            src-tauri/target/release/bundle/nsis/*.exe
+            src-tauri/target/release/bundle/msi/*.msi

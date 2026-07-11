@@ -1,0 +1,16 @@
+[package]
+name = "smeazy-common"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+axum = { workspace = true }
+sqlx = { workspace = true }
+jsonwebtoken = { workspace = true }
+smeazy-domain = { workspace = true }

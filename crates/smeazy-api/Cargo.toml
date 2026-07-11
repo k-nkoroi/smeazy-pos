@@ -1,0 +1,33 @@
+[package]
+name = "smeazy-api"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "smeazy-api"
+path = "src/main.rs"
+
+[dependencies]
+tokio            = { workspace = true }
+axum             = { workspace = true }
+tower            = { workspace = true }
+tower-http       = { workspace = true }
+serde            = { workspace = true }
+serde_json       = { workspace = true }
+uuid             = { workspace = true }
+chrono           = { workspace = true }
+rust_decimal     = { workspace = true }
+thiserror        = { workspace = true }
+anyhow           = { workspace = true }
+tracing          = { workspace = true }
+tracing-subscriber = { workspace = true }
+sqlx             = { workspace = true }
+dotenvy          = { workspace = true }
+smeazy-domain    = { workspace = true }
+smeazy-common    = { workspace = true }
+smeazy-iam       = { workspace = true }
+smeazy-pos       = { workspace = true }
+smeazy-inventory = { workspace = true }
+smeazy-kitchen   = { workspace = true }
+smeazy-analytics = { workspace = true }
+smeazy-tables    = { workspace = true }
