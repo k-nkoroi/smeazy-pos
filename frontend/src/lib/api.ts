@@ -71,6 +71,7 @@ export const inventoryApi = {
   listItems:      (catId?: string, itemType?: string) => api.get('/inventory/items', { params: { ...(catId?{category_id:catId}:{}), ...(itemType?{item_type:itemType}:{}) } }),
   createItem:     (d: any)         => api.post('/inventory/items', d),
   updateItem:     (id: string, d: any) => api.put(`/inventory/items/${id}`, d),
+  bulkDeleteItems: (ids: string[])     => api.post('/inventory/items/bulk-delete', { ids }),
   adjustStock:    (id: string, d: any) => api.post(`/inventory/items/${id}/adjust`, d),
   recordSpoil:    (id: string, d: any) => api.post(`/inventory/items/${id}/spoil`, d),
   getRecipe:      (id: string) => api.get(`/inventory/items/${id}/recipe`),

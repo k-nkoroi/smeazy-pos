@@ -465,6 +465,25 @@ impl InventoryService {
         Ok(recipe)
     }
 
+    /// Bulk "delete" — safe soft-delete (deactivate). Items with sales, stock-take,
+    /// or requisition history can't be hard-deleted without corrupting the audit
+    /// trail, so this deactivates them instead: they drop out of the active list,
+    /// the POS, and low-stock alerts, but historical records stay intact.
+    pub async fn bulk_deactivate_items(&self, ctx: &TenantContext, ids: &[String]) -> Result<BulkDeleteResult, ApiError> {
+        if ids.is_empty() { return Err(ApiError::bad_request("No items selected")); }
+        let bid = ctx.business_id.map(|b| b.to_string()).unwrap_or_default();
+        let mut deactivated = Vec::new();
+        for id in ids {
+            let res = sqlx::query("UPDATE inventory_items SET is_active=0, updated_at=datetime('now') WHERE id=? AND business_id=?")
+                .bind(id).bind(&bid).execute(&self.db).await.map_err(ApiError::from)?;
+            if res.rows_affected() > 0 { deactivated.push(id.clone()); }
+        }
+        smeazy_common::audit::audit(&self.db, smeazy_common::audit::AuditEntry::new(&bid, "inventory.bulk_delete", "inventory_item", format!("Deleted {} item(s)", deactivated.len()))
+            .actor(ctx.user_id.to_string())
+            .meta(&serde_json::json!({ "ids": deactivated }))).await;
+        Ok(BulkDeleteResult { deactivated: deactivated.len(), ids: deactivated })
+    }
+
     /// Deplete ingredient stock for an assembled product being sold or spoiled.
     /// Returns true if the product was assembled (ingredients depleted), false if
     /// it's a direct-stock product (caller should deduct the product's own stock).

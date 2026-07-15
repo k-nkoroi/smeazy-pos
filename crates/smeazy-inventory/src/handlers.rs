@@ -135,3 +135,9 @@ pub async fn set_recipe(State(s): State<InvState>, Extension(ctx): Extension<Ten
     if !smeazy_common::roles::is_manager_or_admin(&ctx) { return Err(ApiError::forbidden("Only admins and managers can edit recipes")); }
     Ok(ApiResponse::ok(s.set_recipe(&ctx, &product_id, req).await?))
 }
+
+// ── Bulk delete (soft) ────────────────────────────────────────────────────────
+pub async fn bulk_delete_items(State(s): State<InvState>, Extension(ctx): Extension<TenantContext>, Json(req): Json<BulkDeleteReq>) -> Result<(StatusCode, Json<ApiResponse<BulkDeleteResult>>), ApiError> {
+    if !smeazy_common::roles::is_manager_or_admin(&ctx) { return Err(ApiError::forbidden("Only admins and managers can delete inventory items")); }
+    Ok(ApiResponse::ok(s.bulk_deactivate_items(&ctx, &req.ids).await?))
+}

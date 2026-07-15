@@ -12,6 +12,7 @@ pub fn inventory_routes(svc: Arc<InventoryService>, auth: AuthState) -> Router {
         .route("/inventory/items/:id/adjust",          post(adjust_stock))
         .route("/inventory/items/:id/spoil",           post(record_spoil))
         .route("/inventory/items/:id/recipe",          get(get_recipe).put(set_recipe))
+        .route("/inventory/items/bulk-delete",         post(bulk_delete_items))
         .route("/inventory/alerts",                    get(low_stock_alerts))
         .route("/inventory/import",                    post(import_csv))
         .route("/inventory/export",                    get(export_csv))

@@ -179,3 +179,10 @@ pub struct SetRecipeReq {
 }
 #[derive(Debug, Deserialize)]
 pub struct RecipeComponentInput { pub ingredient_id: String, pub quantity: f64 }
+
+// ── Bulk delete (soft) ────────────────────────────────────────────────────────
+#[derive(Debug, Deserialize)]
+pub struct BulkDeleteReq { pub ids: Vec<String> }
+
+#[derive(Debug, Serialize)]
+pub struct BulkDeleteResult { pub deactivated: usize, pub ids: Vec<String> }
