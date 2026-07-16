@@ -63,7 +63,7 @@ pub struct LowStockAlert {
 }
 
 #[derive(Debug, Serialize)]
-pub struct ImportResult { pub imported: usize, pub skipped: usize, pub errors: Vec<String> }
+pub struct ImportResult { pub imported: usize, pub updated: usize, pub skipped: usize, pub errors: Vec<String> }
 
 // ── Stock take ────────────────────────────────────────────────────────────────
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]

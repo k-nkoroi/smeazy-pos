@@ -164,21 +164,21 @@ impl InventoryService {
         let mut rdr = csv::Reader::from_reader(csv_content.as_bytes());
         let headers = rdr.headers().map_err(|e| ApiError::bad_request(format!("Invalid CSV: {e}")))?.clone();
         let is_woocommerce = headers.iter().any(|h| h == "Regular price" || h == "Categories");
-        let mut imported = 0usize; let mut skipped = 0usize; let mut errors: Vec<String> = Vec::new();
+        let mut imported = 0usize; let mut updated = 0usize; let mut skipped = 0usize; let mut errors: Vec<String> = Vec::new();
 
         for (idx, result) in rdr.records().enumerate() {
             let record = match result { Ok(r) => r, Err(e) => { errors.push(format!("Row {}: {}", idx+2, e)); skipped += 1; continue; } };
             let get = |field: &str| -> Option<String> {
                 headers.iter().position(|h| h == field).and_then(|i| record.get(i)).filter(|s| !s.is_empty()).map(|s| s.to_string())
             };
-            let (name, category_name, sale_price, cost_price, stock_qty, reorder_level, image_url, tags, legacy_id, sku_hint) = if is_woocommerce {
+            let (name, category_name, sale_price, cost_price, stock_qty, reorder_level, image_url, tags, legacy_id, sku_hint, item_type_hint) = if is_woocommerce {
                 let name = match get("Name") { Some(n) => n, None => { skipped += 1; continue; } };
                 (name, get("Categories"),
                  get("Regular price").and_then(|s| s.parse::<f64>().ok()),
                  get("Cost").and_then(|s| s.parse::<f64>().ok()),
                  get("Stock").and_then(|s| s.parse::<f64>().ok()),
                  get("Low stock amount").and_then(|s| s.parse::<f64>().ok()),
-                 get("Images"), get("Tags"), get("ID"), get("SKU"))
+                 get("Images"), get("Tags"), get("ID"), get("SKU"), None)
             } else {
                 let name = match get("name") { Some(n) => n, None => { skipped += 1; continue; } };
                 (name, get("category"),
@@ -186,7 +186,7 @@ impl InventoryService {
                  get("cost_price").and_then(|s| s.parse::<f64>().ok()),
                  get("stock_qty").and_then(|s| s.parse::<f64>().ok()),
                  get("reorder_level").and_then(|s| s.parse::<f64>().ok()),
-                 get("image_url"), get("tags"), get("legacy_id"), get("sku"))
+                 get("image_url"), get("tags"), get("legacy_id"), get("sku"), get("item_type"))
             };
             if name.trim().is_empty() { skipped += 1; continue; }
 
@@ -205,28 +205,68 @@ impl InventoryService {
                 } else { None }
             } else { None };
 
-            let sku = sku_hint.unwrap_or_else(|| {
-                let words: Vec<&str> = name.split_whitespace().collect();
-                let prefix: String = words.iter().take(3).map(|w| &w[..w.len().min(3)]).collect::<Vec<_>>().join("").to_uppercase();
-                format!("{}-{}", prefix, &Uuid::new_v4().to_string()[..6].to_uppercase())
-            });
+            let sku = match sku_hint {
+                Some(s) if !s.trim().is_empty() => s.trim().to_string(),
+                _ => {
+                    let words: Vec<&str> = name.split_whitespace().collect();
+                    let prefix: String = words.iter().take(3).map(|w| &w[..w.len().min(3)]).collect::<Vec<_>>().join("").to_uppercase();
+                    format!("{}-{}", prefix, &Uuid::new_v4().to_string()[..6].to_uppercase())
+                }
+            };
+            // Products are the default for CSV import; a row can opt into 'assembly'
+            // (ingredient) via an optional item_type column.
+            let item_type = match item_type_hint.as_deref() {
+                Some("assembly") => "assembly",
+                _ => "product",
+            };
 
-            let existing = sqlx::query_scalar::<_, String>(
-                "SELECT id FROM inventory_items WHERE business_id=? AND name=?")
-                .bind(business_id).bind(&name).fetch_optional(&self.db).await.map_err(ApiError::from)?;
-            if existing.is_some() { skipped += 1; continue; }
+            // Match existing items by SKU (not name) so re-importing the same
+            // catalogue updates prices/stock instead of silently skipping or duplicating.
+            let existing = sqlx::query_as::<_, (String, f64)>(
+                "SELECT id, quantity_on_hand FROM inventory_items WHERE business_id=? AND sku=?")
+                .bind(business_id).bind(&sku).fetch_optional(&self.db).await.map_err(ApiError::from)?;
 
-            let item_id = Uuid::new_v4().to_string();
-            match sqlx::query("INSERT INTO inventory_items (id,business_id,category_id,sku,name,quantity_on_hand,reorder_level,cost_price,sale_price,image_url,tags,track_inventory,is_active,legacy_pos_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,1,1,?)")
-                .bind(&item_id).bind(business_id).bind(&category_id).bind(&sku).bind(&name)
-                .bind(stock_qty.unwrap_or(0.0)).bind(reorder_level.unwrap_or(5.0))
-                .bind(cost_price).bind(sale_price).bind(&image_url).bind(&tags).bind(&legacy_id)
-                .execute(&self.db).await {
-                Ok(_) => imported += 1,
-                Err(e) => { errors.push(format!("'{}': {}", name, e)); skipped += 1; }
+            if let Some((item_id, old_qty)) = existing {
+                // ── UPDATE existing item (prices, stock levels, category, etc.) ──
+                let new_qty = stock_qty.unwrap_or(old_qty);
+                match sqlx::query(
+                    "UPDATE inventory_items SET name=?, category_id=COALESCE(?,category_id), quantity_on_hand=?,
+                     reorder_level=COALESCE(?,reorder_level), cost_price=COALESCE(?,cost_price), sale_price=COALESCE(?,sale_price),
+                     image_url=COALESCE(?,image_url), tags=COALESCE(?,tags), legacy_pos_id=COALESCE(?,legacy_pos_id),
+                     updated_at=datetime('now') WHERE id=?")
+                    .bind(&name).bind(&category_id).bind(new_qty)
+                    .bind(reorder_level).bind(cost_price).bind(sale_price)
+                    .bind(&image_url).bind(&tags).bind(&legacy_id)
+                    .bind(&item_id)
+                    .execute(&self.db).await
+                {
+                    Ok(_) => {
+                        updated += 1;
+                        // Preserve the transaction-driven stock audit trail: log the
+                        // net stock-level change from this import as a movement.
+                        let delta = new_qty - old_qty;
+                        if delta.abs() > 0.0001 {
+                            let _ = sqlx::query("INSERT INTO inventory_movements (id,item_id,movement_type,delta_qty,notes) VALUES (?,?,'adjustment',?,?)")
+                                .bind(Uuid::new_v4().to_string()).bind(&item_id).bind(delta).bind("CSV import stock sync")
+                                .execute(&self.db).await;
+                        }
+                    }
+                    Err(e) => { errors.push(format!("'{}': {}", name, e)); skipped += 1; }
+                }
+            } else {
+                // ── INSERT new item ──
+                let item_id = Uuid::new_v4().to_string();
+                match sqlx::query("INSERT INTO inventory_items (id,business_id,category_id,sku,name,item_type,quantity_on_hand,reorder_level,cost_price,sale_price,image_url,tags,track_inventory,is_active,legacy_pos_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,1,1,?)")
+                    .bind(&item_id).bind(business_id).bind(&category_id).bind(&sku).bind(&name).bind(item_type)
+                    .bind(stock_qty.unwrap_or(0.0)).bind(reorder_level.unwrap_or(5.0))
+                    .bind(cost_price).bind(sale_price).bind(&image_url).bind(&tags).bind(&legacy_id)
+                    .execute(&self.db).await {
+                    Ok(_) => imported += 1,
+                    Err(e) => { errors.push(format!("'{}': {}", name, e)); skipped += 1; }
+                }
             }
         }
-        Ok(ImportResult { imported, skipped, errors })
+        Ok(ImportResult { imported, updated, skipped, errors })
     }
 
     pub async fn export_csv(&self, business_id: &str) -> Result<String, ApiError> {

@@ -195,7 +195,8 @@ export default function InventoryPage() {
     try {
       const text = await file.text()
       const res = await inventoryApi.importCsv(text)
-      toast.success(`Imported ${res.data.data.imported}, skipped ${res.data.data.skipped}`)
+      const d = res.data.data
+      toast.success(`${d.imported} new, ${d.updated} updated${d.skipped?`, ${d.skipped} skipped`:''}`)
       load()
     } catch { toast.error('Import failed') }
     finally { setImportLoading(false); if (fileInputRef.current) fileInputRef.current.value='' }

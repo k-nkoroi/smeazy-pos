@@ -57,7 +57,7 @@ pub async fn import_csv(State(s): State<InvState>, Extension(ctx): Extension<Ten
     let bid = ctx.business_id.ok_or_else(|| ApiError::forbidden("No business context"))?.to_string();
     let csv_str = String::from_utf8(body.to_vec()).map_err(|_| ApiError::bad_request("Invalid UTF-8 in CSV"))?;
     let result = s.import_csv(&bid, &csv_str).await?;
-    smeazy_common::audit::audit(&s.db, smeazy_common::audit::AuditEntry::new(&bid, "inventory.import", "inventory_item", format!("Imported {} items from CSV", result.imported)).actor(ctx.user_id.to_string()).meta(&result)).await;
+    smeazy_common::audit::audit(&s.db, smeazy_common::audit::AuditEntry::new(&bid, "inventory.import", "inventory_item", format!("CSV import: {} new, {} updated, {} skipped", result.imported, result.updated, result.skipped)).actor(ctx.user_id.to_string()).meta(&result)).await;
     Ok(ApiResponse::ok(result))
 }
 pub async fn export_csv(State(s): State<InvState>, Extension(ctx): Extension<TenantContext>) -> Result<Response, ApiError> {
