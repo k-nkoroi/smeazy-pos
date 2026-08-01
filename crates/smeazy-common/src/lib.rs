@@ -85,4 +85,10 @@ pub mod roles {
     pub fn is_manager_or_admin(ctx: &TenantContext) -> bool {
         is_admin(ctx) || matches!(ctx.role, UserRoleType::ExecutiveStaff)
     }
+    /// Storekeeper and every role senior to it (cashier, executive, admin, owner) —
+    /// excludes Waitstaff (operational_staff) and contractors. Used for actions like
+    /// confirming a room's key is back at reception (Accommodation "Ready" override).
+    pub fn is_storekeeper_or_above(ctx: &TenantContext) -> bool {
+        is_manager_or_admin(ctx) || matches!(ctx.role, UserRoleType::Cashier | UserRoleType::Storekeeper)
+    }
 }

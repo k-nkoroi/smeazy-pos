@@ -55,6 +55,7 @@ export const posApi = {
   createOrder:      (d: any)                  => api.post('/pos/orders', d),
   addItem:          (orderId: string, d: any) => api.post(`/pos/orders/${orderId}/items`, d),
   removeItem:       (orderId: string, itemId: string) => api.delete(`/pos/orders/${orderId}/items/${itemId}`),
+  updateItemQuantity: (orderId: string, itemId: string, quantity: number) => api.put(`/pos/orders/${orderId}/items/${itemId}/quantity`, { quantity }),
   updateItemStatus: (itemId: string, d: any)  => api.put(`/pos/items/${itemId}/status`, d),
   updateWaitstaff:  (orderId: string, d: any) => api.put(`/pos/orders/${orderId}/waitstaff`, d),
   applyDiscount:    (orderId: string, d: any) => api.post(`/pos/orders/${orderId}/discount`, d),
@@ -62,6 +63,11 @@ export const posApi = {
   checkout:         (orderId: string, d: any) => api.post(`/pos/orders/${orderId}/checkout`, d),
   voidOrder:        (orderId: string)         => api.post(`/pos/orders/${orderId}/void`),
   summary:          (date?: string)           => api.get('/pos/summary', { params: { date } }),
+}
+
+export const accommodationApi = {
+  listRooms: ()               => api.get('/accommodation/rooms'),
+  setReady:  (itemId: string, notes?: string) => api.put(`/accommodation/rooms/${itemId}/ready`, { notes }),
 }
 
 export const inventoryApi = {

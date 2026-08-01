@@ -1,6 +1,18 @@
-# SMEazy POS — Offline-First Hospitality Point of Sale (v2.4)
+# SMEazy POS — Offline-First Hospitality Point of Sale (v2.5)
 
 A modular, production-grade point-of-sale platform built for hospitality businesses (bars, restaurants, pools, accommodation). **Fully offline-first**: the Rust binary embeds SQLite and auto-creates the database on first run — no Docker, no PostgreSQL, no network required. Ships as a native Windows desktop app via Tauri 2, or run the API + web frontend separately for development.
+
+## What's new in 2.5
+
+**Self-updating desktop app.** Admins can go to **Settings → Software Update** and click **Check for Updates** — the app checks the configured GitHub repository's Releases for a newer signed version, and **Install & Restart** downloads and installs it in place, then relaunches. Your database lives in the OS app-data folder, entirely separate from the install directory an update replaces, so your data is untouched. The GitHub repository to check is admin-configurable in Settings; see the CI section below for the one-time signing setup this requires.
+
+**Accommodation / room status board.** Any product in a category tagged with the `Accommodation` department automatically appears on a new **Accommodation** dashboard view as a Room. Rooms move through **Ready → Occupied → Readying → Ready** automatically as they're added to POS orders, paid, or the checkout-time cutoff (11am the day after check-in) passes — with a manual "key is at reception" override available to Storekeeper role and above.
+
+**Purchase orders by search.** The "New PO" screen no longer auto-populates every low-stock item — search for exactly the products or ingredients you want and set an exact quantity per line.
+
+**Click-to-edit quantities on the bill.** Click a line item's quantity on the active order screen to type an exact amount, or use the +/- stepper, instead of re-adding the product repeatedly.
+
+**Large-party tables.** Table capacity is a free number with no cap — set it as high as you need for big group bookings.
 
 ## What's new in 2.4
 
@@ -22,31 +34,45 @@ A modular, production-grade point-of-sale platform built for hospitality busines
 
 ## Building the Windows app with GitHub Actions
 
-A ready-to-use workflow lives at `.github/workflows/build.yml`. It builds the Rust API sidecar, bundles the Tauri desktop app, and produces a Windows installer — no local toolchain required.
+A ready-to-use workflow lives at `.github/workflows/build.yml`. It builds the Rust API sidecar, then uses Tauri's official `tauri-action` to build, **sign**, and publish a Windows installer plus an auto-update manifest (`latest.json`) as a GitHub Release — no local toolchain required.
 
-**One-time setup**
-1. Push this project to a GitHub repository.
-2. Ensure the workflow file `.github/workflows/build.yml` is included (it is, in this project).
-3. Under the repo's **Settings → Actions → General → Workflow permissions**, select **Read and write permissions** (so tagged builds can publish a Release).
+### One-time setup
 
-**Build on demand**
-- Go to the repo's **Actions** tab → **Build SMEazy POS (Tauri)** → **Run workflow**.
-- When it finishes, open the run and download the **smeazy-pos-windows** artifact — it contains the `.exe` (NSIS) installer and, if produced, the `.msi`.
+**1. Generate a signing keypair.** The self-updater refuses to install anything not signed with your key, so this can't be skipped. Run this once, locally, wherever you have the Tauri CLI:
+```bash
+cargo install tauri-cli --version "^2" --locked
+cargo tauri signer generate -w ~/.tauri/smeazy-pos.key
+```
+This prints a **public key** and writes a **private key** file (optionally password-protect it when prompted). Keep the private key secret — never commit it or paste it into chat.
 
-**Build a versioned release**
-- Tag a commit and push the tag:
-  ```bash
-  git tag v2.4.0
-  git push origin v2.4.0
-  ```
-- The workflow builds and automatically creates a GitHub **Release** for that tag with the installers attached.
+**2. Put the public key in the app config.** Open `src-tauri/tauri.conf.json` and replace the placeholder:
+```json
+"plugins": { "updater": { "pubkey": "PASTE_YOUR_PUBLIC_KEY_HERE" } }
+```
 
-**What the workflow does**
+**3. Add the private key to GitHub secrets.** Repo → **Settings → Secrets and variables → Actions** → add:
+- `TAURI_SIGNING_PRIVATE_KEY` — the full contents of the private key file
+- `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` — the password you set (leave the secret empty/omit if you didn't set one)
+
+**4. Enable workflow write access.** Repo → **Settings → Actions → General → Workflow permissions** → **Read and write permissions**.
+
+**5. Point the app at your repo.** In the running app, an admin sets the GitHub owner/repository under **Settings → Software Update** (defaults to this project's own repo). The `endpoints` URL in `tauri.conf.json` is the build-time fallback; the Settings values are what the app actually checks at runtime.
+
+### Build a versioned release
+```bash
+git tag v2.5.0
+git push origin v2.5.0
+```
+The workflow builds, signs, and publishes a GitHub Release with the installer and `latest.json` attached — nothing further to do. Existing installs of the app will find this via **Settings → Check for Updates**.
+
+### Build on demand (no release)
+Repo → **Actions** tab → **Build SMEazy POS (Tauri)** → **Run workflow**. Download the **smeazy-pos-windows** artifact when it finishes — this path skips signing/publishing and is just for grabbing a build to test.
+
+### What the workflow does
 - Installs Rust (MSVC target) and Node 20.
 - `npm ci` in `frontend/`.
 - Builds `smeazy-api` for `x86_64-pc-windows-msvc` and copies it to `src-tauri/binaries/smeazy-api-x86_64-pc-windows-msvc.exe` (the sidecar name Tauri expects).
-- Runs `cargo tauri build`, which builds the frontend (`beforeBuildCommand`) and bundles everything into an installer.
-- Uploads the installer(s) as an artifact and, on a tag, attaches them to a Release.
+- Runs `tauri-apps/tauri-action`, which builds the frontend, bundles the installer, signs it (if the signing secrets are present), and publishes a GitHub Release with `latest.json` — the file the updater's endpoint reads to know a new version exists.
 
 > The icon at `src-tauri/icons/icon.ico` is bundled automatically; replace it with your own square PNG via `cargo tauri icon path/to/logo.png` if you'd like custom branding.
 

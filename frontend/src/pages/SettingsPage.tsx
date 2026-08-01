@@ -1,15 +1,19 @@
 import { useEffect, useState } from 'react'
-import { Settings as SettingsIcon, Percent, Smartphone, Save } from 'lucide-react'
+import { Settings as SettingsIcon, Percent, Smartphone, Save, Download, RefreshCw, CheckCircle2 } from 'lucide-react'
 import toast from 'react-hot-toast'
 import clsx from 'clsx'
 import { Layout } from '../components/shared/Layout'
 import { authApi } from '../lib/api'
 import { Spinner } from '../components/shared/Spinner'
+import { checkForUpdate, installUpdate, relaunchApp, isDesktopApp, type UpdateInfo } from '../lib/updater'
 
 export default function SettingsPage() {
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [s, setS] = useState<Record<string, string>>({})
+  const [checking, setChecking] = useState(false)
+  const [installing, setInstalling] = useState(false)
+  const [updateInfo, setUpdateInfo] = useState<UpdateInfo | null>(null)
 
   async function load() {
     setLoading(true)
@@ -29,6 +33,32 @@ export default function SettingsPage() {
     } catch (e: any) {
       toast.error(e.response?.data?.error?.message ?? 'Failed to save')
     } finally { setSaving(false) }
+  }
+
+  async function handleCheckForUpdate() {
+    const owner = s.update_repo_owner || 'k-nkoroi'
+    const repo = s.update_repo_name || 'smeazy-pos'
+    setChecking(true); setUpdateInfo(null)
+    try {
+      const info = await checkForUpdate(owner, repo)
+      setUpdateInfo(info)
+      if (!info.available) toast.success("You're on the latest version")
+    } catch (e: any) {
+      toast.error(e.message ?? 'Update check failed')
+    } finally { setChecking(false) }
+  }
+
+  async function handleInstallUpdate() {
+    const owner = s.update_repo_owner || 'k-nkoroi'
+    const repo = s.update_repo_name || 'smeazy-pos'
+    setInstalling(true)
+    try {
+      await installUpdate(owner, repo)
+      toast.success('Update installed — restarting...')
+      await relaunchApp()
+    } catch (e: any) {
+      toast.error(e.message ?? 'Update install failed')
+    } finally { setInstalling(false) }
   }
 
   const darajaOn = s.daraja_enabled === 'true'
@@ -115,6 +145,52 @@ export default function SettingsPage() {
             </div>
           </div>
           <p className="text-xs text-amber-600 mt-3">Live STK push activates in an upcoming update. Configuration is saved now so it's ready to switch on.</p>
+        </div>
+
+        {/* Software Update */}
+        <div className="card p-6">
+          <div className="flex items-center gap-2 mb-4">
+            <Download className="w-5 h-5 text-brand-600" />
+            <h2 className="font-semibold text-lg">Software Update</h2>
+          </div>
+          {!isDesktopApp() ? (
+            <p className="text-sm text-slate-500">Updates are only available in the installed desktop app.</p>
+          ) : (
+            <>
+              <div className="grid grid-cols-2 gap-4 mb-4">
+                <div>
+                  <label className="label">GitHub owner</label>
+                  <input className="input" value={s.update_repo_owner ?? 'k-nkoroi'} onChange={e => set('update_repo_owner', e.target.value)} placeholder="e.g. k-nkoroi" />
+                </div>
+                <div>
+                  <label className="label">Repository</label>
+                  <input className="input" value={s.update_repo_name ?? 'smeazy-pos'} onChange={e => set('update_repo_name', e.target.value)} placeholder="e.g. smeazy-pos" />
+                </div>
+              </div>
+              <p className="text-xs text-slate-400 mb-4">
+                The app checks this repository's GitHub Releases for a newer signed version. Your data stays on this device — updates only replace the application files.
+              </p>
+
+              <div className="flex items-center gap-3">
+                <button onClick={handleCheckForUpdate} disabled={checking} className="btn-secondary flex items-center gap-2">
+                  {checking ? <Spinner size="sm" /> : <RefreshCw className="w-4 h-4" />} Check for Updates
+                </button>
+                {updateInfo && !updateInfo.available && (
+                  <span className="flex items-center gap-1.5 text-sm text-emerald-600"><CheckCircle2 className="w-4 h-4" /> Up to date (v{updateInfo.current_version})</span>
+                )}
+              </div>
+
+              {updateInfo?.available && (
+                <div className="mt-4 p-4 rounded-xl bg-brand-50 border border-brand-200">
+                  <p className="font-medium text-sm text-brand-800">Version {updateInfo.latest_version} is available (current: v{updateInfo.current_version})</p>
+                  {updateInfo.notes && <p className="text-xs text-slate-600 mt-1 whitespace-pre-wrap">{updateInfo.notes}</p>}
+                  <button onClick={handleInstallUpdate} disabled={installing} className="btn-primary mt-3 flex items-center gap-2">
+                    {installing ? <Spinner size="sm" /> : <Download className="w-4 h-4" />} Install &amp; Restart
+                  </button>
+                </div>
+              )}
+            </>
+          )}
         </div>
 
         <button onClick={save} disabled={saving} className="btn-primary flex items-center gap-2">

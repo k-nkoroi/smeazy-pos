@@ -10,6 +10,7 @@ import StaffPage      from './pages/StaffPage'
 import RegistersPage  from './pages/RegistersPage'
 import LogsPage       from './pages/LogsPage'
 import SettingsPage   from './pages/SettingsPage'
+import AccommodationPage from './pages/AccommodationPage'
 import FloorPlanPage  from './pages/FloorPlanPage'
 import PosOrderPage   from './pages/PosOrderPage'
 import KitchenPage    from './pages/KitchenPage'
@@ -64,6 +65,7 @@ export default function App() {
       <Route path="/registers" element={<RequireCap cap="registers"><PosLockGuard><RegistersPage /></PosLockGuard></RequireCap>} />
       <Route path="/logs"      element={<RequireCap cap="logs"><PosLockGuard><LogsPage /></PosLockGuard></RequireCap>} />
       <Route path="/settings"  element={<RequireCap cap="settings"><PosLockGuard><SettingsPage /></PosLockGuard></RequireCap>} />
+      <Route path="/accommodation" element={<RequireCap cap="accommodation"><PosLockGuard><AccommodationPage /></PosLockGuard></RequireCap>} />
       <Route path="/inventory" element={<RequireCap cap="inventory"><PosLockGuard><InventoryPage /></PosLockGuard></RequireCap>} />
       <Route path="/analytics" element={<RequireCap cap="analytics"><PosLockGuard><AnalyticsPage /></PosLockGuard></RequireCap>} />
 

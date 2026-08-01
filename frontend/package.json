@@ -1,7 +1,7 @@
 {
   "name": "smeazy-frontend",
   "private": true,
-  "version": "2.4.2",
+  "version": "2.5.0",
   "type": "module",
   "scripts": {
     "dev": "vite --port 3000",
@@ -12,6 +12,7 @@
     "@tauri-apps/api": "^2.11.1",
     "@tauri-apps/plugin-dialog": "^2.7.1",
     "@tauri-apps/plugin-fs": "^2.5.1",
+    "@tauri-apps/plugin-process": "^2.3.0",
     "axios": "^1.6.5",
     "clsx": "^2.1.0",
     "lucide-react": "^0.303.0",

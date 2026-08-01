@@ -1,5 +1,5 @@
 [package]
-name = "smeazy-pos"
+name = "smeazy-accommodation"
 version = "0.1.0"
 edition = "2021"
 
@@ -8,13 +8,10 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 uuid = { workspace = true }
 chrono = { workspace = true }
-rust_decimal = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 sqlx = { workspace = true }
 axum = { workspace = true }
 tokio = { workspace = true }
-smeazy-domain    = { workspace = true }
-smeazy-common    = { workspace = true }
-smeazy-inventory = { workspace = true }
-smeazy-accommodation = { workspace = true }
+smeazy-domain = { workspace = true }
+smeazy-common = { workspace = true }

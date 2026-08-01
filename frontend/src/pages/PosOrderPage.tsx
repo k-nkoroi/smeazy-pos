@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
-import { ArrowLeft, Search, Trash2, ChefHat, CreditCard, CheckCircle, Truck, Users, Printer } from 'lucide-react'
+import { ArrowLeft, Search, Trash2, ChefHat, CreditCard, CheckCircle, Truck, Users, Printer, Minus, Plus as PlusIcon } from 'lucide-react'
 import toast from 'react-hot-toast'
 import clsx from 'clsx'
 import { posApi, inventoryApi, authApi } from '../lib/api'
@@ -33,6 +33,9 @@ export default function PosOrderPage() {
   const [showWaitstaffModal, setShowWaitstaffModal] = useState(false)
   const [staffList, setStaffList] = useState<any[]>([])
   const [receipt, setReceipt] = useState<any|null>(null)   // checkout result for printable receipt
+  const [qtyBusy, setQtyBusy] = useState<string|null>(null)
+  const [editingQtyId, setEditingQtyId] = useState<string|null>(null)
+  const [editingQtyValue, setEditingQtyValue] = useState('')
   const [directorRate, setDirectorRate] = useState<null|'directors_promo'|'directors_discount'>(null)
   const user = useAuthStore(s => s.user)
   const vatRate = 0.16 // display rate; server is authoritative
@@ -83,6 +86,19 @@ export default function PosOrderPage() {
     } catch { toast.error('Failed to add item') }
   }
   async function removeItem(itemId:string) { await posApi.removeItem(orderId!,itemId).catch(()=>null); reload() }
+  async function changeQuantity(itemId:string, newQty:number) {
+    if (newQty < 0) return
+    setQtyBusy(itemId)
+    try { await posApi.updateItemQuantity(orderId!, itemId, newQty) }
+    catch (e:any) { toast.error(e.response?.data?.error?.message ?? 'Failed to update quantity') }
+    finally { setQtyBusy(null); reload() }
+  }
+  async function commitQuantity(itemId:string) {
+    const n = parseInt(editingQtyValue)
+    setEditingQtyId(null)
+    if (isNaN(n)) return
+    await changeQuantity(itemId, n)
+  }
   async function updateItemStatus(itemId:string,status:string) { await posApi.updateItemStatus(itemId,{status}).catch(()=>null); reload() }
 
   async function sendToKitchen() {
@@ -201,7 +217,28 @@ export default function PosOrderPage() {
                         )}
                       </div>
                       <div className="flex items-center gap-2 mt-1">
-                        <span className="text-slate-400 text-xs">×{item.quantity}</span>
+                        <div className="flex items-center gap-1 bg-slate-800 rounded-lg px-1">
+                          <button onClick={()=>changeQuantity(item.id,item.quantity-1)} disabled={qtyBusy===item.id}
+                            className="w-5 h-5 flex items-center justify-center text-slate-400 hover:text-white disabled:opacity-40" title="Decrease quantity">
+                            <Minus className="w-3 h-3"/>
+                          </button>
+                          {editingQtyId===item.id ? (
+                            <input autoFocus type="number" min="0" value={editingQtyValue}
+                              onChange={e=>setEditingQtyValue(e.target.value)}
+                              onBlur={()=>commitQuantity(item.id)}
+                              onKeyDown={e=>{ if(e.key==='Enter') commitQuantity(item.id); if(e.key==='Escape') setEditingQtyId(null) }}
+                              className="w-10 bg-slate-700 text-white text-xs text-center rounded outline-none border border-brand-500"/>
+                          ) : (
+                            <button onClick={()=>{setEditingQtyId(item.id);setEditingQtyValue(String(item.quantity))}}
+                              className="text-white text-xs font-semibold w-5 text-center hover:text-brand-400" title="Click to enter exact quantity">
+                              {item.quantity}
+                            </button>
+                          )}
+                          <button onClick={()=>changeQuantity(item.id,item.quantity+1)} disabled={qtyBusy===item.id}
+                            className="w-5 h-5 flex items-center justify-center text-slate-400 hover:text-white disabled:opacity-40" title="Increase quantity">
+                            <PlusIcon className="w-3 h-3"/>
+                          </button>
+                        </div>
                         <span className="text-slate-300 text-xs">KES {item.unit_price.toLocaleString()}</span>
                         <span className="text-brand-400 text-xs font-bold ml-auto">KES {(item.quantity*item.unit_price).toLocaleString()}</span>
                       </div>

@@ -9,6 +9,7 @@ members = [
   "crates/smeazy-kitchen",
   "crates/smeazy-analytics",
   "crates/smeazy-tables",
+  "crates/smeazy-accommodation",
   "crates/smeazy-api",
 ]
 # src-tauri is a standalone Tauri app crate with its own Cargo.toml —
@@ -68,3 +69,4 @@ smeazy-inventory = { path = "crates/smeazy-inventory" }
 smeazy-kitchen   = { path = "crates/smeazy-kitchen" }
 smeazy-analytics = { path = "crates/smeazy-analytics" }
 smeazy-tables    = { path = "crates/smeazy-tables" }
+smeazy-accommodation = { path = "crates/smeazy-accommodation" }

@@ -22,6 +22,13 @@ pub async fn remove_item(State(s): State<PosState>, Path((order_id, item_id)): P
     s.remove_item(&order_id, &item_id).await?;
     Ok(ApiResponse::ok(serde_json::json!({"removed": true})))
 }
+pub async fn update_item_quantity(State(s): State<PosState>, Path((order_id, item_id)): Path<(String, String)>, Json(req): Json<UpdateItemQuantityReq>) -> Result<(StatusCode, Json<ApiResponse<serde_json::Value>>), ApiError> {
+    let updated = s.update_item_quantity(&order_id, &item_id, req.quantity).await?;
+    match updated {
+        Some(item) => Ok(ApiResponse::ok(serde_json::json!(item))),
+        None => Ok(ApiResponse::ok(serde_json::json!({"removed": true}))),
+    }
+}
 pub async fn update_item_status(State(s): State<PosState>, Path(item_id): Path<String>, Json(req): Json<UpdateItemStatusReq>) -> Result<(StatusCode, Json<ApiResponse<OrderItem>>), ApiError> {
     Ok(ApiResponse::ok(s.update_item_status(&item_id, req).await?))
 }

@@ -15,6 +15,7 @@ use smeazy_inventory::{routes::inventory_routes, service::InventoryService};
 use smeazy_tables::{routes::tables_routes, service::TablesService};
 use smeazy_kitchen::{routes::kitchen_routes, service::KitchenService};
 use smeazy_analytics::{routes::analytics_routes, service::AnalyticsService};
+use smeazy_accommodation::{routes::accommodation_routes, service::AccommodationService};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -44,11 +45,29 @@ async fn main() -> anyhow::Result<()> {
     let auth_state = AuthState { jwt_secret: Arc::new(jwt_secret.clone()) };
 
     let inventory_svc = Arc::new(InventoryService::new(db.clone()));
+    let accommodation_svc = Arc::new(AccommodationService::new(db.clone()));
     let iam_svc       = Arc::new(IamService::new(db.clone(), jwt_secret.clone()));
-    let pos_svc       = Arc::new(PosService::new(db.clone(), inventory_svc.clone()));
+    let pos_svc       = Arc::new(PosService::new(db.clone(), inventory_svc.clone(), accommodation_svc.clone()));
     let tables_svc    = Arc::new(TablesService::new(db.clone()));
     let kitchen_svc   = Arc::new(KitchenService::new(db.clone()));
     let analytics_svc = Arc::new(AnalyticsService::new(db.clone()));
+
+    // Background scheduler: periodically flip Occupied rooms whose checkout time
+    // (next 11am after check-in) has passed into Readying.
+    {
+        let sweep_svc = accommodation_svc.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(300)); // every 5 min
+            loop {
+                interval.tick().await;
+                match sweep_svc.run_readying_sweep().await {
+                    Ok(n) if n > 0 => tracing::info!("🛎️  Accommodation sweep: {} room(s) moved to Readying", n),
+                    Ok(_) => {}
+                    Err(e) => tracing::warn!("Accommodation readying sweep failed: {:?}", e),
+                }
+            }
+        });
+    }
 
     // Permissive CORS — offline desktop app (Tauri webview origin + localhost dev)
     let cors = CorsLayer::new().allow_origin(Any).allow_methods(Any).allow_headers(Any);
@@ -61,7 +80,8 @@ async fn main() -> anyhow::Result<()> {
         .merge(inventory_routes(inventory_svc, auth_state.clone()))
         .merge(tables_routes(tables_svc, auth_state.clone()))
         .merge(kitchen_routes(kitchen_svc, auth_state.clone()))
-        .merge(analytics_routes(analytics_svc, auth_state))
+        .merge(analytics_routes(analytics_svc, auth_state.clone()))
+        .merge(accommodation_routes(accommodation_svc, auth_state))
         .layer(cors)
         .layer(tower_http::trace::TraceLayer::new_for_http());
 

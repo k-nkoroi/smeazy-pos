@@ -19,7 +19,7 @@ pub enum Currency { Kes, Usd }
 #[serde(rename_all = "snake_case")]
 pub enum UserRoleType {
     SysAdminIt, SysAdminFinance, Customer, Solopreneur,
-    Entrepreneur, AdminStaff, ExecutiveStaff, OperationalStaff, GuestContractor,
+    Entrepreneur, AdminStaff, ExecutiveStaff, Cashier, Storekeeper, OperationalStaff, GuestContractor,
 }
 impl UserRoleType {
     pub fn as_str(&self) -> &'static str {
@@ -31,6 +31,8 @@ impl UserRoleType {
             Self::Entrepreneur     => "entrepreneur",
             Self::AdminStaff       => "admin_staff",
             Self::ExecutiveStaff   => "executive_staff",
+            Self::Cashier          => "cashier",
+            Self::Storekeeper      => "storekeeper",
             Self::OperationalStaff => "operational_staff",
             Self::GuestContractor  => "guest_contractor",
         }
@@ -43,6 +45,8 @@ impl UserRoleType {
             "entrepreneur"      => Self::Entrepreneur,
             "admin_staff"       => Self::AdminStaff,
             "executive_staff"   => Self::ExecutiveStaff,
+            "cashier"           => Self::Cashier,
+            "storekeeper"       => Self::Storekeeper,
             "operational_staff" => Self::OperationalStaff,
             "guest_contractor"  => Self::GuestContractor,
             _                   => Self::Customer,

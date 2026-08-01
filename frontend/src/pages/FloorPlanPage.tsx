@@ -29,6 +29,7 @@ export default function FloorPlanPage() {
   const [selectedWaiterName, setSelectedWaiterName] = useState('')
   const [newTableName, setNewTableName] = useState('')
   const [newTableArea, setNewTableArea] = useState('Main Hall')
+  const [newTableCapacity, setNewTableCapacity] = useState('')
   const [showAddTable, setShowAddTable] = useState(false)
   const [opening, setOpening] = useState(false)
   const intervalRef = useRef<any>(null)
@@ -95,9 +96,9 @@ export default function FloorPlanPage() {
   async function addTable() {
     if (!newTableName) return toast.error('Table name required')
     try {
-      await tablesApi.create({ table_name: newTableName, area_name: newTableArea })
+      await tablesApi.create({ table_name: newTableName, area_name: newTableArea, capacity: newTableCapacity ? parseInt(newTableCapacity) : undefined })
       toast.success('Table added')
-      setShowAddTable(false); setNewTableName(''); load()
+      setShowAddTable(false); setNewTableName(''); setNewTableCapacity(''); load()
     } catch { toast.error('Failed to add table') }
   }
 
@@ -263,7 +264,7 @@ export default function FloorPlanPage() {
               <div className="flex items-center gap-3">
                 <button onClick={() => setGuestCount(g => Math.max(1, g-1))} className="w-10 h-10 rounded-lg bg-slate-700 text-white font-bold text-xl hover:bg-slate-600">-</button>
                 <span className="text-white font-bold text-2xl w-10 text-center">{guestCount}</span>
-                <button onClick={() => setGuestCount(g => Math.min(20, g+1))} className="w-10 h-10 rounded-lg bg-slate-700 text-white font-bold text-xl hover:bg-slate-600">+</button>
+                <button onClick={() => setGuestCount(g => g+1)} className="w-10 h-10 rounded-lg bg-slate-700 text-white font-bold text-xl hover:bg-slate-600">+</button>
               </div>
             </div>
             {waitstaff.length > 0 && !isWaitstaffOnly(user?.roles) && (
@@ -359,6 +360,12 @@ export default function FloorPlanPage() {
               <label className="block text-sm font-medium text-slate-300 mb-2">Area</label>
               <input className="w-full bg-slate-700 border border-slate-600 rounded-lg px-3 py-2.5 text-white text-sm"
                 placeholder="Main Hall" value={newTableArea} onChange={e => setNewTableArea(e.target.value)} />
+            </div>
+            <div className="mb-5">
+              <label className="block text-sm font-medium text-slate-300 mb-2">Max guests</label>
+              <input type="number" min="1" className="w-full bg-slate-700 border border-slate-600 rounded-lg px-3 py-2.5 text-white text-sm"
+                placeholder="4" value={newTableCapacity} onChange={e => setNewTableCapacity(e.target.value)} />
+              <p className="text-xs text-slate-500 mt-1">Set higher for large-party tables (e.g. 25+ for group bookings).</p>
             </div>
             <div className="flex gap-3">
               <button className="flex-1 btn-primary" onClick={addTable}>Add Table</button>

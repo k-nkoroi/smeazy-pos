@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { Grid3X3, UtensilsCrossed, Package, BarChart2, TrendingUp, Users, CreditCard } from 'lucide-react'
+import { Grid3X3, UtensilsCrossed, Package, BarChart2, TrendingUp, Users, CreditCard, BedDouble } from 'lucide-react'
 import { Layout } from '../components/shared/Layout'
 import { useAuthStore, useDeviceStore } from '../hooks/useAuth'
 import { posApi, inventoryApi } from '../lib/api'
@@ -39,6 +39,7 @@ export default function DashboardPage() {
     { href: '/floor',     icon: Grid3X3,          label: 'Floor Plan',     sub: 'Open & manage tables', color: 'text-brand-600 bg-brand-50',     cap: 'pos' as const },
     { href: '/kitchen',   icon: UtensilsCrossed,  label: 'Kitchen Screen', sub: 'View live orders',     color: 'text-orange-600 bg-orange-50',   cap: 'kitchen' as const },
     { href: '/inventory', icon: Package,          label: 'Inventory',      sub: 'Stock & categories',   color: 'text-violet-600 bg-violet-50',   cap: 'inventory' as const },
+    { href: '/accommodation', icon: BedDouble,    label: 'Accommodation',  sub: 'Room status board',    color: 'text-rose-600 bg-rose-50',       cap: 'accommodation' as const },
     { href: '/analytics', icon: BarChart2,        label: 'Analytics',      sub: 'Sales & revenue',      color: 'text-emerald-600 bg-emerald-50', cap: 'analytics' as const },
     { href: '/registers', icon: CreditCard,       label: 'Registers',      sub: 'Tills & departments',  color: 'text-teal-600 bg-teal-50',       cap: 'registers' as const },
     { href: '/staff',     icon: Users,            label: 'Staff',          sub: 'Team & roles',         color: 'text-pink-600 bg-pink-50',       cap: 'staff' as const },

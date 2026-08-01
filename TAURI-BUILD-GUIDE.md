@@ -76,7 +76,7 @@ copy target\release\smeazy-api.exe src-tauri\binaries\smeazy-api-x86_64-pc-windo
 
 Put any square PNG (512×512) at `src-tauri\icons\icon.png`, then:
 ```cmd
-cargo tauri icon src-tauri\icons\icon.ico
+cargo tauri icon src-tauri\icons\icon.png
 ```
 This generates `icon.ico` and all sizes automatically.
 

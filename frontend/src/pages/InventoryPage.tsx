@@ -58,6 +58,8 @@ export default function InventoryPage() {
   const [showNewPO, setShowNewPO] = useState(false)
   const [poSupplier, setPoSupplier] = useState('')
   const [poLines, setPoLines] = useState<Record<string,{checked:boolean;qty:string}>>({})
+  const [poSelectedItems, setPoSelectedItems] = useState<Record<string, any>>({})
+  const [poSearch, setPoSearch] = useState('')
   const [poNotes, setPoNotes] = useState('')
   const [activePO, setActivePO] = useState<any|null>(null)
   const [receiveQtys, setReceiveQtys] = useState<Record<string,string>>({})
@@ -250,23 +252,36 @@ export default function InventoryPage() {
 
   // ── PO handlers ──────────────────────────────────────────────────────────
   function openNewPO() {
-    // Pre-populate with low-stock items
-    const lines: Record<string,{checked:boolean;qty:string}> = {}
-    for (const a of alerts) {
-      const suggested = Math.max(a.reorder * 2 - a.on_hand, 1)
-      lines[a.item_id] = { checked: true, qty: String(Math.ceil(suggested)) }
-    }
-    setPoLines(lines); setPoSupplier(''); setPoNotes(''); setShowNewPO(true)
+    // Start empty — the user searches for exactly what they want to order,
+    // rather than being pre-populated with every low-stock item.
+    setPoLines({}); setPoSelectedItems({}); setPoSearch(''); setPoSupplier(''); setPoNotes(''); setShowNewPO(true)
+  }
+  // Search across both products and ingredients (kitchen POs are for ingredients).
+  const poSearchPool = [...items, ...ingredients]
+  const poSearchResults = poSearch.trim().length === 0 ? [] : poSearchPool
+    .filter(i => !poLines[i.id] && (i.name.toLowerCase().includes(poSearch.toLowerCase()) || i.sku?.toLowerCase().includes(poSearch.toLowerCase())))
+    .slice(0, 8)
+  function addPoLine(item: any) {
+    setPoLines(p => ({ ...p, [item.id]: { checked: true, qty: '1' } }))
+    setPoSelectedItems(p => ({ ...p, [item.id]: item }))
+    setPoSearch('')
+  }
+  function removePoLine(id: string) {
+    setPoLines(p => { const n = { ...p }; delete n[id]; return n })
+    setPoSelectedItems(p => { const n = { ...p }; delete n[id]; return n })
   }
   async function createPO() {
-    const selected = alerts.filter(a => poLines[a.item_id]?.checked)
-    if (selected.length === 0) return toast.error('Select at least one item')
-    const lines = selected.map(a => ({
-      item_id: a.item_id, item_name: a.name, item_sku: a.sku,
-      unit_of_measure: a.unit_of_measure,
-      requested_qty: parseFloat(poLines[a.item_id].qty) || 1,
-      unit_cost: a.cost_price ?? undefined,
-    }))
+    const selectedIds = Object.keys(poLines).filter(id => poLines[id]?.checked)
+    if (selectedIds.length === 0) return toast.error('Search for and add at least one item')
+    const lines = selectedIds.map(id => {
+      const it = poSelectedItems[id]
+      return {
+        item_id: id, item_name: it.name, item_sku: it.sku,
+        unit_of_measure: it.unit_of_measure,
+        requested_qty: parseFloat(poLines[id].qty) || 1,
+        unit_cost: it.cost_price ?? undefined,
+      }
+    })
     try {
       const res = await inventoryApi.createRequisition({ supplier_id: poSupplier||undefined, notes: poNotes||undefined, lines })
       await inventoryApi.submitRequisition(res.data.data.id)
@@ -890,7 +905,7 @@ export default function InventoryPage() {
           <div className="bg-white rounded-2xl w-full max-w-2xl max-h-[90vh] overflow-y-auto">
             <div className="p-6 border-b border-slate-100">
               <h2 className="font-bold text-xl">New Purchase Order</h2>
-              <p className="text-slate-500 text-sm mt-1">Pre-populated with items at or below reorder level</p>
+              <p className="text-slate-500 text-sm mt-1">Search for the products you want to order</p>
             </div>
             <div className="p-6 space-y-4">
               <div><label className="label">Supplier</label>
@@ -900,27 +915,58 @@ export default function InventoryPage() {
                 </select>
                 {suppliers.length===0 && <p className="text-xs text-amber-600 mt-1">No suppliers yet — add one in the Suppliers tab first</p>}
               </div>
+
+              <div className="relative">
+                <label className="label">Search products &amp; ingredients</label>
+                <div className="relative">
+                  <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2"/>
+                  <input className="input pl-9" placeholder="Type a product or ingredient name / SKU..."
+                    value={poSearch} onChange={e=>setPoSearch(e.target.value)} autoFocus/>
+                </div>
+                {poSearchResults.length > 0 && (
+                  <div className="absolute z-10 left-0 right-0 mt-1 bg-white border border-slate-200 rounded-xl shadow-lg max-h-64 overflow-y-auto">
+                    {poSearchResults.map((it:any)=>(
+                      <button key={it.id} onClick={()=>addPoLine(it)}
+                        className="w-full text-left px-4 py-2.5 hover:bg-slate-50 flex items-center justify-between gap-3 border-b border-slate-50 last:border-0">
+                        <div className="min-w-0">
+                          <p className="font-medium text-sm truncate">{it.name}</p>
+                          <p className="text-xs text-slate-400">{it.sku} · {it.quantity_on_hand} {it.unit_of_measure} on hand{it.item_type==='assembly'?' · Ingredient':''}</p>
+                        </div>
+                        <Plus className="w-4 h-4 text-brand-600 shrink-0"/>
+                      </button>
+                    ))}
+                  </div>
+                )}
+                {poSearch.trim() && poSearchResults.length===0 && (
+                  <p className="text-xs text-slate-400 mt-1">No matching items</p>
+                )}
+              </div>
+
               <div>
-                <label className="label">Items to order ({alerts.filter(a=>poLines[a.item_id]?.checked).length} selected)</label>
-                <div className="border border-slate-200 rounded-xl divide-y divide-slate-100 max-h-72 overflow-y-auto">
-                  {alerts.map(a=>(
-                    <div key={a.item_id} className="flex items-center gap-3 px-4 py-2.5">
-                      <input type="checkbox" checked={poLines[a.item_id]?.checked??false}
-                        onChange={e=>setPoLines(p=>({...p,[a.item_id]:{checked:e.target.checked,qty:p[a.item_id]?.qty??'1'}}))}
-                        className="w-4 h-4 rounded"/>
-                      <div className="flex-1 min-w-0">
-                        <p className="font-medium text-sm truncate">{a.name}</p>
-                        <p className="text-xs text-slate-400">{a.on_hand} on hand · reorder at {a.reorder}</p>
+                <label className="label">Items in this PO ({Object.keys(poLines).filter(id=>poLines[id]?.checked).length})</label>
+                <div className="border border-slate-200 rounded-xl divide-y divide-slate-100 max-h-64 overflow-y-auto">
+                  {Object.keys(poLines).filter(id=>poLines[id]?.checked).map(id=>{
+                    const it = poSelectedItems[id]; if(!it) return null
+                    return (
+                      <div key={id} className="flex items-center gap-3 px-4 py-2.5">
+                        <div className="flex-1 min-w-0">
+                          <p className="font-medium text-sm truncate">{it.name}</p>
+                          <p className="text-xs text-slate-400">{it.quantity_on_hand} on hand · reorder at {it.reorder_level}</p>
+                        </div>
+                        <input type="number" className="input py-1 w-20 text-sm" min="1"
+                          value={poLines[id]?.qty??'1'}
+                          onChange={e=>setPoLines(p=>({...p,[id]:{checked:true,qty:e.target.value}}))}/>
+                        <span className="text-xs text-slate-400 w-10">{it.unit_of_measure}</span>
+                        <button onClick={()=>removePoLine(id)} className="p-1 rounded hover:bg-red-50 text-slate-400 hover:text-red-500"><X className="w-4 h-4"/></button>
                       </div>
-                      <input type="number" className="input py-1 w-20 text-sm" min="1"
-                        value={poLines[a.item_id]?.qty??'1'}
-                        onChange={e=>setPoLines(p=>({...p,[a.item_id]:{checked:p[a.item_id]?.checked??true,qty:e.target.value}}))}/>
-                      <span className="text-xs text-slate-400 w-10">{a.unit_of_measure}</span>
-                    </div>
-                  ))}
-                  {alerts.length===0 && <p className="px-4 py-8 text-center text-slate-400 text-sm">No low-stock items — all inventory is healthy</p>}
+                    )
+                  })}
+                  {Object.keys(poLines).filter(id=>poLines[id]?.checked).length===0 && (
+                    <p className="px-4 py-8 text-center text-slate-400 text-sm">Search above to add items to this order</p>
+                  )}
                 </div>
               </div>
+
               <div><label className="label">Notes</label>
                 <input className="input" value={poNotes} onChange={e=>setPoNotes(e.target.value)} placeholder="Delivery instructions, urgency, etc."/></div>
             </div>

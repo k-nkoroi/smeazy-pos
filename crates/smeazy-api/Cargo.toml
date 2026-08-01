@@ -30,4 +30,5 @@ smeazy-pos       = { workspace = true }
 smeazy-inventory = { workspace = true }
 smeazy-kitchen   = { workspace = true }
 smeazy-analytics = { workspace = true }
+smeazy-accommodation = { workspace = true }
 smeazy-tables    = { workspace = true }

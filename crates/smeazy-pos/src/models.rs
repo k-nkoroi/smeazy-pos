@@ -59,6 +59,9 @@ pub struct AddItemReq {
 }
 
 #[derive(Debug, Deserialize)]
+pub struct UpdateItemQuantityReq { pub quantity: i64 }
+
+#[derive(Debug, Deserialize)]
 pub struct UpdateItemStatusReq {
     pub status: String,   // "new" | "processing" | "dispatched"
 }

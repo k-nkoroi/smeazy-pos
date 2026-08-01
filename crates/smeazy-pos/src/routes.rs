@@ -8,6 +8,7 @@ pub fn pos_routes(svc: Arc<PosService>, auth: AuthState) -> Router {
         .route("/pos/orders/:id",                         get(get_order))
         .route("/pos/orders/:id/items",                   post(add_item))
         .route("/pos/orders/:id/items/:item_id",          delete(remove_item))
+        .route("/pos/orders/:id/items/:item_id/quantity", put(update_item_quantity))
         .route("/pos/orders/:id/void",                    post(void_order))
         .route("/pos/orders/:id/discount",                post(apply_discount))
         .route("/pos/orders/:id/waitstaff",               put(update_waitstaff))

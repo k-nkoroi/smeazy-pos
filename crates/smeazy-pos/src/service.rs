@@ -6,18 +6,20 @@ use smeazy_domain::TenantContext;
 use chrono;
 use super::models::*;
 use smeazy_inventory::service::InventoryService;
+use smeazy_accommodation::service::AccommodationService;
 
 pub struct PosService {
     pub db: SqlitePool,
     pub inventory: Arc<InventoryService>,
+    pub accommodation: Arc<AccommodationService>,
     /// Broadcast channel for kitchen screen updates
     pub kitchen_tx: tokio::sync::broadcast::Sender<String>,
 }
 
 impl PosService {
-    pub fn new(db: SqlitePool, inventory: Arc<InventoryService>) -> Self {
+    pub fn new(db: SqlitePool, inventory: Arc<InventoryService>, accommodation: Arc<AccommodationService>) -> Self {
         let (kitchen_tx, _) = tokio::sync::broadcast::channel(256);
-        Self { db, inventory, kitchen_tx }
+        Self { db, inventory, accommodation, kitchen_tx }
     }
 
     pub async fn create_order(&self, ctx: &TenantContext, req: CreateOrderReq) -> Result<PosOrder, ApiError> {
@@ -70,6 +72,12 @@ impl PosService {
         sqlx::query("UPDATE pos_orders SET total_amount = total_amount + ? WHERE id=?")
             .bind(line_total).bind(order_id).execute(&self.db).await.map_err(ApiError::from)?;
 
+        // Autonomous check-in: if this item is an Accommodation-department Room,
+        // mark it Occupied. No-op for any other item.
+        if let Some(ref iid) = req.item_id {
+            let _ = self.accommodation.mark_occupied_if_room(&bid, iid, order_id).await;
+        }
+
         sqlx::query_as::<_, OrderItem>("SELECT * FROM pos_order_items WHERE id=?")
             .bind(&item_id).fetch_one(&self.db).await.map_err(ApiError::from)
     }
@@ -82,6 +90,38 @@ impl PosService {
         sqlx::query("UPDATE pos_orders SET total_amount = total_amount - ? WHERE id=?")
             .bind(line_total).bind(order_id).execute(&self.db).await.map_err(ApiError::from)?;
         Ok(())
+    }
+
+    /// Directly set a line item's quantity (click-to-edit on the bill), instead of
+    /// re-adding the product repeatedly. Setting quantity to 0 or less removes the line.
+    pub async fn update_item_quantity(&self, order_id: &str, item_id: &str, new_qty: i64) -> Result<Option<OrderItem>, ApiError> {
+        let item = sqlx::query_as::<_, OrderItem>("SELECT * FROM pos_order_items WHERE id=? AND order_id=?")
+            .bind(item_id).bind(order_id).fetch_one(&self.db).await
+            .map_err(|_| ApiError::not_found("Order item not found"))?;
+
+        let order = sqlx::query_as::<_, PosOrder>("SELECT * FROM pos_orders WHERE id=?")
+            .bind(order_id).fetch_one(&self.db).await.map_err(ApiError::from)?;
+        if order.status != "open" {
+            return Err(ApiError::bad_request("Cannot edit items on a closed order"));
+        }
+
+        if new_qty <= 0 {
+            self.remove_item(order_id, item_id).await?;
+            return Ok(None);
+        }
+
+        let old_line_total = item.unit_price * item.quantity as f64 - item.discount;
+        let new_line_total = item.unit_price * new_qty as f64 - item.discount;
+        let delta = new_line_total - old_line_total;
+
+        sqlx::query("UPDATE pos_order_items SET quantity=? WHERE id=?")
+            .bind(new_qty).bind(item_id).execute(&self.db).await.map_err(ApiError::from)?;
+        sqlx::query("UPDATE pos_orders SET total_amount = total_amount + ? WHERE id=?")
+            .bind(delta).bind(order_id).execute(&self.db).await.map_err(ApiError::from)?;
+
+        let updated = sqlx::query_as::<_, OrderItem>("SELECT * FROM pos_order_items WHERE id=?")
+            .bind(item_id).fetch_one(&self.db).await.map_err(ApiError::from)?;
+        Ok(Some(updated))
     }
 
     pub async fn update_item_status(&self, item_id: &str, req: UpdateItemStatusReq) -> Result<OrderItem, ApiError> {
@@ -255,8 +295,13 @@ impl PosService {
 
     pub async fn void_order(&self, ctx: &TenantContext, order_id: &str) -> Result<(), ApiError> {
         let bid = ctx.business_id.ok_or_else(|| ApiError::forbidden("No business context"))?.to_string();
-        sqlx::query("UPDATE pos_orders SET status='voided', closed_at=datetime('now') WHERE id=? AND business_id=? AND status='open'")
+        let result = sqlx::query("UPDATE pos_orders SET status='voided', closed_at=datetime('now') WHERE id=? AND business_id=? AND status='open'")
             .bind(order_id).bind(&bid).execute(&self.db).await.map_err(ApiError::from)?;
+        if result.rows_affected() > 0 {
+            // The order was cleared before payment — any Rooms tied to it were
+            // never actually sold, so revert them to Ready.
+            let _ = self.accommodation.revert_rooms_for_voided_order(&bid, order_id).await;
+        }
         Ok(())
     }
     
