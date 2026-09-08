@@ -53,3 +53,26 @@ pub async fn daily_summary(State(s): State<PosState>, Extension(ctx): Extension<
     let date = params.get("date").cloned().unwrap_or_else(|| chrono::Utc::now().format("%Y-%m-%d").to_string());
     Ok(ApiResponse::ok(s.daily_summary(&bid, &date).await?))
 }
+pub async fn attach_customer(State(s): State<PosState>, Extension(ctx): Extension<TenantContext>, Path(order_id): Path<String>, Json(req): Json<AttachCustomerReq>) -> Result<(StatusCode, Json<ApiResponse<PosOrder>>), ApiError> {
+    Ok(ApiResponse::ok(s.attach_customer(&ctx, &order_id, req).await?))
+}
+pub async fn pay_tab(State(s): State<PosState>, Extension(ctx): Extension<TenantContext>, Path(order_id): Path<String>, Json(req): Json<PayTabReq>) -> Result<(StatusCode, Json<ApiResponse<CheckoutResult>>), ApiError> {
+    Ok(ApiResponse::ok(s.pay_tab(&ctx, &order_id, req).await?))
+}
+
+// ── Customers ─────────────────────────────────────────────────────────────────
+pub async fn list_or_search_customers(State(s): State<PosState>, Extension(ctx): Extension<TenantContext>, Query(params): Query<HashMap<String,String>>) -> Result<(StatusCode, Json<ApiResponse<serde_json::Value>>), ApiError> {
+    let bid = ctx.business_id.ok_or_else(|| ApiError::forbidden("No business context"))?.to_string();
+    match params.get("search").map(|s| s.trim()).filter(|s| !s.is_empty()) {
+        Some(q) => Ok(ApiResponse::ok(serde_json::json!(s.search_customers(&bid, q).await?))),
+        None => Ok(ApiResponse::ok(serde_json::json!(s.list_customers(&bid).await?))),
+    }
+}
+pub async fn create_customer(State(s): State<PosState>, Extension(ctx): Extension<TenantContext>, Json(req): Json<CreateCustomerReq>) -> Result<(StatusCode, Json<ApiResponse<Customer>>), ApiError> {
+    let bid = ctx.business_id.ok_or_else(|| ApiError::forbidden("No business context"))?.to_string();
+    Ok(ApiResponse::created(s.create_customer(&bid, req).await?))
+}
+pub async fn get_customer(State(s): State<PosState>, Extension(ctx): Extension<TenantContext>, Path(id): Path<String>) -> Result<(StatusCode, Json<ApiResponse<CustomerDetail>>), ApiError> {
+    let bid = ctx.business_id.ok_or_else(|| ApiError::forbidden("No business context"))?.to_string();
+    Ok(ApiResponse::ok(s.get_customer(&bid, &id).await?))
+}

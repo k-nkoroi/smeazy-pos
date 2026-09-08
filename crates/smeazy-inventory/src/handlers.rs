@@ -123,7 +123,34 @@ pub async fn submit_requisition(State(s): State<InvState>, Path(id): Path<String
     Ok(ApiResponse::ok(s.submit_requisition(&id).await?))
 }
 pub async fn receive_line(State(s): State<InvState>, Path(line_id): Path<String>, Json(req): Json<ReceiveLineReq>) -> Result<(StatusCode, Json<ApiResponse<RequisitionLine>>), ApiError> {
-    Ok(ApiResponse::ok(s.receive_line(&line_id, req.received_qty).await?))
+    Ok(ApiResponse::ok(s.receive_line(&line_id, req.received_qty, req.expiry_date.as_deref()).await?))
+}
+
+// ── Inventory batches ─────────────────────────────────────────────────────────
+pub async fn list_batches(State(s): State<InvState>, Extension(ctx): Extension<TenantContext>, Path(item_id): Path<String>) -> Result<(StatusCode, Json<ApiResponse<Vec<InventoryBatch>>>), ApiError> {
+    let bid = ctx.business_id.ok_or_else(|| ApiError::forbidden("No business context"))?.to_string();
+    Ok(ApiResponse::ok(s.list_batches(&bid, &item_id).await?))
+}
+pub async fn create_batch(State(s): State<InvState>, Extension(ctx): Extension<TenantContext>, Path(item_id): Path<String>, Json(req): Json<CreateBatchReq>) -> Result<(StatusCode, Json<ApiResponse<InventoryBatch>>), ApiError> {
+    if !smeazy_common::roles::is_storekeeper_or_above(&ctx) { return Err(ApiError::forbidden("Only storekeepers and above can record batches")); }
+    Ok(ApiResponse::created(s.create_batch_manual(&ctx, &item_id, req).await?))
+}
+pub async fn update_batch(State(s): State<InvState>, Extension(ctx): Extension<TenantContext>, Path(id): Path<String>, Json(req): Json<UpdateBatchReq>) -> Result<(StatusCode, Json<ApiResponse<InventoryBatch>>), ApiError> {
+    if !smeazy_common::roles::is_storekeeper_or_above(&ctx) { return Err(ApiError::forbidden("Only storekeepers and above can edit batches")); }
+    Ok(ApiResponse::ok(s.update_batch(&ctx, &id, req).await?))
+}
+pub async fn expiring_batches(State(s): State<InvState>, Extension(ctx): Extension<TenantContext>, Query(params): Query<HashMap<String,String>>) -> Result<(StatusCode, Json<ApiResponse<Vec<InventoryBatch>>>), ApiError> {
+    let bid = ctx.business_id.ok_or_else(|| ApiError::forbidden("No business context"))?.to_string();
+    let days = params.get("days").and_then(|s| s.parse::<i64>().ok()).unwrap_or(14);
+    Ok(ApiResponse::ok(s.expiring_batches(&bid, days).await?))
+}
+
+// ── Staged kitchen production ─────────────────────────────────────────────────
+pub async fn process_batch(State(s): State<InvState>, Extension(ctx): Extension<TenantContext>, Path(id): Path<String>, Json(req): Json<ProcessBatchReq>) -> Result<(StatusCode, Json<ApiResponse<InventoryItem>>), ApiError> {
+    Ok(ApiResponse::ok(s.process_batch(&ctx, &id, req).await?))
+}
+pub async fn complete_processing(State(s): State<InvState>, Extension(ctx): Extension<TenantContext>, Path(id): Path<String>, Json(req): Json<CompleteProcessingReq>) -> Result<(StatusCode, Json<ApiResponse<InventoryItem>>), ApiError> {
+    Ok(ApiResponse::ok(s.complete_processing(&ctx, &id, req).await?))
 }
 
 // ── Recipes ──────────────────────────────────────────────────────────────────

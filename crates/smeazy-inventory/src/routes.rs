@@ -26,6 +26,11 @@ pub fn inventory_routes(svc: Arc<InventoryService>, auth: AuthState) -> Router {
         .route("/inventory/requisitions/:id",          get(get_requisition))
         .route("/inventory/requisitions/:id/submit",   post(submit_requisition))
         .route("/inventory/requisition-lines/:id/receive", put(receive_line))
+        .route("/inventory/items/:id/batches",         get(list_batches).post(create_batch))
+        .route("/inventory/batches/:id",               put(update_batch))
+        .route("/inventory/batches/expiring",          get(expiring_batches))
+        .route("/inventory/items/:id/process",         post(process_batch))
+        .route("/inventory/items/:id/complete-processing", post(complete_processing))
         .route_layer(middleware::from_fn_with_state(auth, require_auth))
         .with_state(svc)
 }

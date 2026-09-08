@@ -217,11 +217,19 @@ impl PosService {
 
         let total_paid: f64 = req.payments.iter().map(|p| p.amount).sum();
 
-        // Director promo needs no payment; otherwise enforce sufficient payment.
-        if dtype != Some("directors_promo") && total_paid < total - 0.01 {
+        // Director promo needs no payment; otherwise a shortfall is either rejected
+        // or, if the caller opted in and a customer is attached, opened as a tab.
+        let is_shortfall = dtype != Some("directors_promo") && total_paid < total - 0.01;
+        let allow_partial = req.allow_partial.unwrap_or(false);
+        if is_shortfall && !allow_partial {
             return Err(ApiError::bad_request(format!("Insufficient payment. Total: {:.2}, Paid: {:.2}", total, total_paid)));
         }
-        let change_due = (total_paid - total).max(0.0);
+        if is_shortfall && order.customer_id.is_none() {
+            return Err(ApiError::bad_request("Attach a customer to this order before opening a partial-payment tab"));
+        }
+        let change_due = if is_shortfall { 0.0 } else { (total_paid - total).max(0.0) };
+        let balance_due = if is_shortfall { (total - total_paid).max(0.0) } else { 0.0 };
+        let order_status = if is_shortfall { "tab" } else { "paid" };
 
         // ── VAT-inclusive breakdown ────────────────────────────────────────────
         // Displayed prices already include VAT. Per business config (default 16%),
@@ -248,10 +256,13 @@ impl PosService {
             });
         }
 
-        // Close order with VAT breakdown + discount type
-        sqlx::query("UPDATE pos_orders SET status='paid', closed_at=datetime('now'), total_amount=?, net_amount=?, vat_amount=?, discount_type=?, authorized_by=? WHERE id=?")
-            .bind(total).bind(net_amount).bind(vat_amount)
-            .bind(&req.discount_type).bind(&req.authorized_by)
+        // Close order with VAT breakdown + discount type. A shortfall order is
+        // served and closed for editing just like a fully paid one, but keeps
+        // status='tab' and records the outstanding balance_due against the
+        // attached customer until it's settled via pay_tab().
+        sqlx::query("UPDATE pos_orders SET status=?, closed_at=CASE WHEN ?='paid' THEN datetime('now') ELSE closed_at END, total_amount=?, net_amount=?, vat_amount=?, discount_type=?, authorized_by=?, balance_due=? WHERE id=?")
+            .bind(order_status).bind(order_status).bind(total).bind(net_amount).bind(vat_amount)
+            .bind(&req.discount_type).bind(&req.authorized_by).bind(balance_due)
             .bind(order_id).execute(&self.db).await.map_err(ApiError::from)?;
 
         sqlx::query("UPDATE pos_order_items SET status='paid' WHERE order_id=?")
@@ -259,7 +270,8 @@ impl PosService {
         sqlx::query("UPDATE kitchen_orders SET status='completed', completed_at=datetime('now') WHERE order_id=?")
             .bind(order_id).execute(&self.db).await.map_err(ApiError::from)?;
 
-        // Deduct inventory stock for linked items (sale movement)
+        // Deduct inventory stock for linked items (sale movement) — goods are
+        // served whether the balance is settled in full or carried as a tab.
         let items = sqlx::query_as::<_, OrderItem>("SELECT * FROM pos_order_items WHERE order_id=?")
             .bind(order_id).fetch_all(&self.db).await.map_err(ApiError::from)?;
         for item in &items {
@@ -278,19 +290,166 @@ impl PosService {
         let action = match dtype {
             Some("directors_promo") => "sale.directors_promo",
             Some("directors_discount") => "sale.directors_discount",
+            _ if is_shortfall => "sale.tab_opened",
             _ => "sale.checkout",
         };
         let summary = match dtype {
             Some("directors_promo") => format!("Director's promotion (100% off) — {} settled free", order.table_name.clone().unwrap_or_else(|| "order".into())),
             Some("directors_discount") => format!("Director's discount (at cost KES {:.2}) — {}", total, order.table_name.clone().unwrap_or_else(|| "order".into())),
+            _ if is_shortfall => format!("Tab opened for {} — KES {:.2} of {:.2} paid, KES {:.2} outstanding",
+                order.customer_name.clone().unwrap_or_else(|| "customer".into()), total_paid, total, balance_due),
             _ => format!("Checkout KES {:.2} (net {:.2} + VAT {:.2})", total, net_amount, vat_amount),
         };
         smeazy_common::audit::audit(&self.db, smeazy_common::audit::AuditEntry::new(&bid, action, "order", summary)
             .actor(ctx.user_id.to_string())
             .entity(order_id, order.table_name.clone().unwrap_or_else(|| order_id.to_string()))
-            .meta(&serde_json::json!({ "gross": gross, "total": total, "net": net_amount, "vat": vat_amount, "discount_type": dtype, "authorized_by": req.authorized_by, "payments": req.payments.iter().map(|p| serde_json::json!({"method": p.method, "amount": p.amount})).collect::<Vec<_>>() }))).await;
+            .meta(&serde_json::json!({ "gross": gross, "total": total, "net": net_amount, "vat": vat_amount, "discount_type": dtype, "authorized_by": req.authorized_by, "balance_due": balance_due, "customer_id": order.customer_id, "payments": req.payments.iter().map(|p| serde_json::json!({"method": p.method, "amount": p.amount})).collect::<Vec<_>>() }))).await;
 
-        Ok(CheckoutResult { order_id: order_id.to_string(), total, net_amount, vat_amount, paid: total_paid, change_due, payments: payment_records })
+        Ok(CheckoutResult { order_id: order_id.to_string(), total, net_amount, vat_amount, paid: total_paid, change_due, balance_due, status: order_status.to_string(), payments: payment_records })
+    }
+
+    /// Record a further payment against an order that was left as an open
+    /// 'tab' (partially paid) — used to settle a customer's outstanding
+    /// balance over time. Closes the order once the balance reaches zero.
+    pub async fn pay_tab(&self, ctx: &TenantContext, order_id: &str, req: PayTabReq) -> Result<CheckoutResult, ApiError> {
+        let bid = ctx.business_id.ok_or_else(|| ApiError::forbidden("No business context"))?.to_string();
+        let order = sqlx::query_as::<_, PosOrder>("SELECT * FROM pos_orders WHERE id=? AND business_id=?")
+            .bind(order_id).bind(&bid).fetch_one(&self.db).await
+            .map_err(|_| ApiError::not_found("Order not found"))?;
+        if order.status != "tab" { return Err(ApiError::bad_request("This order does not have an open tab")); }
+        let payments: Vec<&ConfirmPaymentReq> = req.payments.iter().filter(|p| p.amount > 0.0).collect();
+        if payments.is_empty() { return Err(ApiError::bad_request("Enter at least one payment amount")); }
+
+        let mut payment_records = Vec::new();
+        let mut paid_now = 0.0;
+        for payment in &payments {
+            let pid = Uuid::new_v4().to_string();
+            sqlx::query("INSERT INTO payment_records (id,order_id,method,amount,reference,confirmed_by) VALUES (?,?,?,?,?,?)")
+                .bind(&pid).bind(order_id).bind(&payment.method).bind(payment.amount).bind(&payment.reference).bind(ctx.user_id.to_string())
+                .execute(&self.db).await.map_err(ApiError::from)?;
+            paid_now += payment.amount;
+            payment_records.push(PaymentRecord { id: pid, order_id: order_id.to_string(), method: payment.method.clone(), amount: payment.amount, reference: payment.reference.clone(), confirmed_at: chrono::Utc::now().to_rfc3339() });
+        }
+
+        let new_balance = (order.balance_due - paid_now).max(0.0);
+        let new_status = if new_balance <= 0.01 { "paid" } else { "tab" };
+        sqlx::query("UPDATE pos_orders SET balance_due=?, status=?, closed_at=CASE WHEN ?='paid' THEN datetime('now') ELSE closed_at END WHERE id=?")
+            .bind(new_balance).bind(new_status).bind(new_status).bind(order_id)
+            .execute(&self.db).await.map_err(ApiError::from)?;
+
+        let (net_amount, vat_amount): (f64, f64) = sqlx::query_as("SELECT net_amount, vat_amount FROM pos_orders WHERE id=?")
+            .bind(order_id).fetch_one(&self.db).await.map_err(ApiError::from)?;
+
+        smeazy_common::audit::audit(&self.db, smeazy_common::audit::AuditEntry::new(&bid,
+            if new_status == "paid" { "sale.tab_settled" } else { "sale.tab_payment" }, "order",
+            format!("Tab payment of KES {:.2} for {}{}", paid_now,
+                order.customer_name.clone().unwrap_or_else(|| "customer".into()),
+                if new_status == "paid" { " — tab fully settled".to_string() } else { format!(" — KES {:.2} still outstanding", new_balance) }))
+            .actor(ctx.user_id.to_string())
+            .entity(order_id, order.table_name.clone().unwrap_or_else(|| order_id.to_string()))
+            .meta(&serde_json::json!({ "paid_now": paid_now, "new_balance": new_balance, "customer_id": order.customer_id }))).await;
+
+        Ok(CheckoutResult {
+            order_id: order_id.to_string(), total: order.total_amount, net_amount, vat_amount,
+            paid: paid_now, change_due: 0.0, balance_due: new_balance, status: new_status.to_string(),
+            payments: payment_records,
+        })
+    }
+
+    // ── Customers / tabs ────────────────────────────────────────────────────
+    async fn with_balances(&self, customers: Vec<Customer>) -> Result<Vec<CustomerWithBalance>, ApiError> {
+        let mut out = Vec::with_capacity(customers.len());
+        for c in customers {
+            let (balance, open_tabs): (Option<f64>, i64) = sqlx::query_as(
+                "SELECT SUM(balance_due), COUNT(*) FROM pos_orders WHERE customer_id=? AND status='tab'")
+                .bind(&c.id).fetch_one(&self.db).await.map_err(ApiError::from)?;
+            out.push(CustomerWithBalance { customer: c, balance_due: balance.unwrap_or(0.0), open_tabs });
+        }
+        Ok(out)
+    }
+
+    pub async fn search_customers(&self, business_id: &str, query: &str) -> Result<Vec<CustomerWithBalance>, ApiError> {
+        let like = format!("%{}%", query.trim());
+        let customers = sqlx::query_as::<_, Customer>(
+            "SELECT * FROM customers WHERE business_id=? AND (name LIKE ? OR phone LIKE ?) ORDER BY name LIMIT 10")
+            .bind(business_id).bind(&like).bind(&like)
+            .fetch_all(&self.db).await.map_err(ApiError::from)?;
+        self.with_balances(customers).await
+    }
+
+    pub async fn list_customers(&self, business_id: &str) -> Result<Vec<CustomerWithBalance>, ApiError> {
+        let customers = sqlx::query_as::<_, Customer>("SELECT * FROM customers WHERE business_id=? ORDER BY name")
+            .bind(business_id).fetch_all(&self.db).await.map_err(ApiError::from)?;
+        self.with_balances(customers).await
+    }
+
+    pub async fn get_customer(&self, business_id: &str, id: &str) -> Result<CustomerDetail, ApiError> {
+        let customer = sqlx::query_as::<_, Customer>("SELECT * FROM customers WHERE id=? AND business_id=?")
+            .bind(id).bind(business_id).fetch_one(&self.db).await.map_err(ApiError::from)?;
+        let orders = sqlx::query_as::<_, PosOrder>("SELECT * FROM pos_orders WHERE customer_id=? ORDER BY opened_at DESC LIMIT 100")
+            .bind(id).fetch_all(&self.db).await.map_err(ApiError::from)?;
+        let balance: Option<f64> = sqlx::query_scalar("SELECT SUM(balance_due) FROM pos_orders WHERE customer_id=? AND status='tab'")
+            .bind(id).fetch_one(&self.db).await.map_err(ApiError::from)?;
+        Ok(CustomerDetail { customer, balance_due: balance.unwrap_or(0.0), orders })
+    }
+
+    pub async fn create_customer(&self, business_id: &str, req: CreateCustomerReq) -> Result<Customer, ApiError> {
+        if req.name.trim().is_empty() { return Err(ApiError::bad_request("Customer name is required")); }
+        let id = Uuid::new_v4().to_string();
+        sqlx::query("INSERT INTO customers (id,business_id,name,phone,email,notes) VALUES (?,?,?,?,?,?)")
+            .bind(&id).bind(business_id).bind(req.name.trim()).bind(&req.phone).bind(&req.email).bind(&req.notes)
+            .execute(&self.db).await.map_err(ApiError::from)?;
+        sqlx::query_as::<_, Customer>("SELECT * FROM customers WHERE id=?")
+            .bind(&id).fetch_one(&self.db).await.map_err(ApiError::from)
+    }
+
+    /// Resolve a customer for an order: by explicit id, else by phone match,
+    /// else by exact case-insensitive name match, else create a brand new one.
+    /// This is what lets a waiter just type a name — if it doesn't match
+    /// anyone, the customer is created transparently; if it does, that
+    /// existing record (and their running tab) is reused.
+    async fn resolve_or_create_customer(&self, business_id: &str, customer_id: Option<&str>, name: &str, phone: Option<&str>) -> Result<Customer, ApiError> {
+        if let Some(cid) = customer_id {
+            if let Some(c) = sqlx::query_as::<_, Customer>("SELECT * FROM customers WHERE id=? AND business_id=?")
+                .bind(cid).bind(business_id).fetch_optional(&self.db).await.map_err(ApiError::from)? {
+                return Ok(c);
+            }
+        }
+        if let Some(p) = phone.map(|p| p.trim()).filter(|p| !p.is_empty()) {
+            if let Some(c) = sqlx::query_as::<_, Customer>("SELECT * FROM customers WHERE business_id=? AND phone=?")
+                .bind(business_id).bind(p).fetch_optional(&self.db).await.map_err(ApiError::from)? {
+                if !name.is_empty() && c.name != name {
+                    sqlx::query("UPDATE customers SET name=?, updated_at=datetime('now') WHERE id=?")
+                        .bind(name).bind(&c.id).execute(&self.db).await.map_err(ApiError::from)?;
+                    return sqlx::query_as::<_, Customer>("SELECT * FROM customers WHERE id=?").bind(&c.id).fetch_one(&self.db).await.map_err(ApiError::from);
+                }
+                return Ok(c);
+            }
+        }
+        if let Some(c) = sqlx::query_as::<_, Customer>("SELECT * FROM customers WHERE business_id=? AND lower(name)=lower(?)")
+            .bind(business_id).bind(name).fetch_optional(&self.db).await.map_err(ApiError::from)? {
+            if let Some(p) = phone.map(|p| p.trim()).filter(|p| !p.is_empty()) {
+                if c.phone.is_none() {
+                    sqlx::query("UPDATE customers SET phone=?, updated_at=datetime('now') WHERE id=?")
+                        .bind(p).bind(&c.id).execute(&self.db).await.map_err(ApiError::from)?;
+                }
+            }
+            return Ok(c);
+        }
+        self.create_customer(business_id, CreateCustomerReq { name: name.to_string(), phone: phone.map(|s| s.to_string()), email: None, notes: None }).await
+    }
+
+    /// Attach a customer to an order — creating them on the fly if this is a
+    /// new name. Called when the waiter confirms a name from the search-bar
+    /// suggestions (or just finishes typing a new one).
+    pub async fn attach_customer(&self, ctx: &TenantContext, order_id: &str, req: AttachCustomerReq) -> Result<PosOrder, ApiError> {
+        let bid = ctx.business_id.ok_or_else(|| ApiError::forbidden("No business context"))?.to_string();
+        if req.name.trim().is_empty() { return Err(ApiError::bad_request("Customer name is required")); }
+        let customer = self.resolve_or_create_customer(&bid, req.customer_id.as_deref(), req.name.trim(), req.phone.as_deref()).await?;
+        sqlx::query("UPDATE pos_orders SET customer_id=?, customer_name=?, customer_phone=? WHERE id=? AND business_id=?")
+            .bind(&customer.id).bind(&customer.name).bind(&customer.phone).bind(order_id).bind(&bid)
+            .execute(&self.db).await.map_err(ApiError::from)?;
+        self.get_order(order_id).await
     }
 
     pub async fn void_order(&self, ctx: &TenantContext, order_id: &str) -> Result<(), ApiError> {

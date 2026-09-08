@@ -7,7 +7,9 @@ pub struct PosOrder {
     pub guest_count: i64, pub cashier_id: String,
     pub waitstaff_id: Option<String>, pub waitstaff_name: Option<String>,
     pub customer_name: Option<String>, pub customer_phone: Option<String>,
+    pub customer_id: Option<String>,
     pub status: String, pub total_amount: f64, pub discount: f64,
+    pub balance_due: f64,
     pub notes: Option<String>, pub opened_at: String,
     pub closed_at: Option<String>, pub kitchen_sent_at: Option<String>,
 }
@@ -81,6 +83,10 @@ pub struct CheckoutReq {
     pub discount_type: Option<String>,
     /// User id of the admin/manager authorising a director rate.
     pub authorized_by: Option<String>,
+    /// If true and the payments don't cover the total, the shortfall is opened
+    /// as a customer tab (order status='tab') instead of being rejected. The
+    /// order must already have a customer attached (see AttachCustomerReq).
+    pub allow_partial: Option<bool>,
 }
 
 #[derive(Debug, Serialize)]
@@ -91,8 +97,51 @@ pub struct CheckoutResult {
     pub vat_amount: f64,
     pub paid: f64,
     pub change_due: f64,
+    pub balance_due: f64,
+    pub status: String,
     pub payments: Vec<PaymentRecord>,
 }
+
+// ── Customers / tabs ──────────────────────────────────────────────────────────
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
+pub struct Customer {
+    pub id: String, pub business_id: String, pub name: String,
+    pub phone: Option<String>, pub email: Option<String>, pub notes: Option<String>,
+    pub created_at: String, pub updated_at: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct CustomerWithBalance {
+    #[serde(flatten)] pub customer: Customer,
+    pub balance_due: f64,
+    pub open_tabs: i64,
+}
+
+#[derive(Debug, Serialize)]
+pub struct CustomerDetail {
+    #[serde(flatten)] pub customer: Customer,
+    pub balance_due: f64,
+    pub orders: Vec<PosOrder>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CreateCustomerReq {
+    pub name: String, pub phone: Option<String>, pub email: Option<String>, pub notes: Option<String>,
+}
+
+/// Attach a (possibly new) customer to an order. As the waiter types a name into
+/// the search bar, the frontend calls the search endpoint for live suggestions;
+/// picking one sends its id here, otherwise just the typed name/phone is sent
+/// and a new customer is created on demand.
+#[derive(Debug, Deserialize)]
+pub struct AttachCustomerReq {
+    pub customer_id: Option<String>,
+    pub name: String,
+    pub phone: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct PayTabReq { pub payments: Vec<ConfirmPaymentReq> }
 
 #[derive(Debug, Deserialize)]
 pub struct ApplyDiscountReq { pub discount: f64 }

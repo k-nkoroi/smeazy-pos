@@ -20,6 +20,11 @@ pub struct InventoryItem {
     pub tags: Option<String>, pub track_inventory: i64, pub is_active: i64,
     pub legacy_pos_id: Option<String>,
     pub is_assembled: i64,
+    /// 'one_step' (default) | 'staged' — see migration 010 for the full model.
+    pub production_type: String,
+    /// Units currently in the "processing" stage for a staged item (ingredients
+    /// already deducted, not yet marked ready-to-eat). Always 0 for one_step items.
+    pub wip_quantity: f64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -33,6 +38,9 @@ pub struct CreateItemReq {
     pub unit_of_measure: Option<String>, pub cost_price: Option<f64>,
     pub sale_price: Option<f64>, pub image_url: Option<String>,
     pub tags: Option<String>, pub track_inventory: Option<bool>,
+    /// 'one_step' (default) | 'staged' — only meaningful for a Kitchen item that
+    /// will have a recipe; see migration 010.
+    pub production_type: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -41,7 +49,14 @@ pub struct UpdateItemReq {
     pub description: Option<String>, pub cost_price: Option<f64>,
     pub sale_price: Option<f64>, pub reorder_level: Option<f64>,
     pub is_active: Option<bool>, pub image_url: Option<String>, pub tags: Option<String>,
+    pub production_type: Option<String>,
 }
+
+// ── Staged kitchen production ─────────────────────────────────────────────────
+#[derive(Debug, Deserialize)]
+pub struct ProcessBatchReq { pub quantity: f64 }
+#[derive(Debug, Deserialize)]
+pub struct CompleteProcessingReq { pub quantity: f64 }
 
 #[derive(Debug, Deserialize)]
 pub struct AdjustStockReq { pub delta: f64, pub reason: Option<String> }
@@ -148,7 +163,35 @@ pub struct CreateRequisitionLine {
     pub unit_cost: Option<f64>, pub notes: Option<String>,
 }
 #[derive(Debug, Deserialize)]
-pub struct ReceiveLineReq { pub received_qty: f64 }
+pub struct ReceiveLineReq {
+    pub received_qty: f64,
+    /// Optional expiry date for the batch created by this receipt (YYYY-MM-DD).
+    /// Can also be left blank here and assigned later from the Inventory list.
+    pub expiry_date: Option<String>,
+}
+
+// ── Inventory batches ──────────────────────────────────────────────────────────
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
+pub struct InventoryBatch {
+    pub id: String, pub business_id: String, pub item_id: String,
+    pub batch_number: String, pub quantity: f64, pub expiry_date: Option<String>,
+    pub source: String, pub requisition_line_id: Option<String>, pub notes: Option<String>,
+    pub received_at: String, pub created_at: String, pub updated_at: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CreateBatchReq {
+    pub quantity: f64,
+    pub expiry_date: Option<String>,
+    pub notes: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct UpdateBatchReq {
+    pub expiry_date: Option<String>,
+    pub quantity: Option<f64>,
+    pub notes: Option<String>,
+}
 
 // ── Recipes / Bill of Materials ───────────────────────────────────────────────
 #[derive(Debug, Clone, Serialize, sqlx::FromRow)]

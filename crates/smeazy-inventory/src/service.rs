@@ -67,23 +67,26 @@ impl InventoryService {
     pub async fn create_item(&self, business_id: &str, req: CreateItemReq) -> Result<InventoryItem, ApiError> {
         let id = Uuid::new_v4().to_string();
         let sku = req.sku.unwrap_or_else(|| format!("SKU-{}", &id[..8].to_uppercase()));
-        sqlx::query("INSERT INTO inventory_items (id,business_id,category_id,sku,name,description,item_type,quantity_on_hand,reorder_level,unit_of_measure,cost_price,sale_price,image_url,tags,track_inventory,is_active) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,1)")
+        let production_type = match req.production_type.as_deref() { Some("staged") => "staged", _ => "one_step" };
+        sqlx::query("INSERT INTO inventory_items (id,business_id,category_id,sku,name,description,item_type,quantity_on_hand,reorder_level,unit_of_measure,cost_price,sale_price,image_url,tags,track_inventory,is_active,production_type) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,1,?)")
             .bind(&id).bind(business_id).bind(&req.category_id).bind(&sku).bind(&req.name)
             .bind(&req.description).bind(req.item_type.as_deref().unwrap_or("product"))
             .bind(req.quantity.unwrap_or(0.0)).bind(req.reorder_level.unwrap_or(5.0))
             .bind(req.unit_of_measure.as_deref().unwrap_or("unit"))
             .bind(req.cost_price).bind(req.sale_price).bind(&req.image_url).bind(&req.tags)
             .bind(if req.track_inventory.unwrap_or(true) { 1 } else { 0 })
+            .bind(production_type)
             .execute(&self.db).await.map_err(ApiError::from)?;
         self.get_item(&id).await
     }
 
     pub async fn update_item(&self, id: &str, business_id: &str, req: UpdateItemReq) -> Result<InventoryItem, ApiError> {
-        sqlx::query("UPDATE inventory_items SET name=COALESCE(?,name), category_id=COALESCE(?,category_id), description=COALESCE(?,description), cost_price=COALESCE(?,cost_price), sale_price=COALESCE(?,sale_price), reorder_level=COALESCE(?,reorder_level), is_active=COALESCE(?,is_active), image_url=COALESCE(?,image_url), tags=COALESCE(?,tags), updated_at=datetime('now') WHERE id=? AND business_id=?")
+        let production_type = match req.production_type.as_deref() { Some("staged") => Some("staged"), Some(_) => Some("one_step"), None => None };
+        sqlx::query("UPDATE inventory_items SET name=COALESCE(?,name), category_id=COALESCE(?,category_id), description=COALESCE(?,description), cost_price=COALESCE(?,cost_price), sale_price=COALESCE(?,sale_price), reorder_level=COALESCE(?,reorder_level), is_active=COALESCE(?,is_active), image_url=COALESCE(?,image_url), tags=COALESCE(?,tags), production_type=COALESCE(?,production_type), updated_at=datetime('now') WHERE id=? AND business_id=?")
             .bind(&req.name).bind(&req.category_id).bind(&req.description)
             .bind(req.cost_price).bind(req.sale_price).bind(req.reorder_level)
             .bind(req.is_active.map(|b| if b { 1i64 } else { 0i64 }))
-            .bind(&req.image_url).bind(&req.tags).bind(id).bind(business_id)
+            .bind(&req.image_url).bind(&req.tags).bind(production_type).bind(id).bind(business_id)
             .execute(&self.db).await.map_err(ApiError::from)?;
         self.get_item(id).await
     }
@@ -130,8 +133,13 @@ impl InventoryService {
     }
 
     pub async fn low_stock_alerts(&self, business_id: &str) -> Result<Vec<LowStockAlert>, ApiError> {
+        // One-step assembled products have no direct stock of their own (their
+        // availability derives from ingredient stock, surfaced via the recipe's
+        // buildable_qty instead) — excluded here. Staged products DO carry real
+        // stock in quantity_on_hand (the processed/ready-to-eat units), so they're
+        // included just like a plain direct-stock product.
         let rows = sqlx::query_as::<_, InventoryItem>(
-            "SELECT i.*, c.name as category_name, c.department as category_department FROM inventory_items i LEFT JOIN product_categories c ON c.id=i.category_id WHERE i.business_id=? AND i.is_active=1 AND i.track_inventory=1 AND i.is_assembled=0 AND i.quantity_on_hand <= i.reorder_level ORDER BY i.quantity_on_hand ASC")
+            "SELECT i.*, c.name as category_name, c.department as category_department FROM inventory_items i LEFT JOIN product_categories c ON c.id=i.category_id WHERE i.business_id=? AND i.is_active=1 AND i.track_inventory=1 AND (i.is_assembled=0 OR i.production_type='staged') AND i.quantity_on_hand <= i.reorder_level ORDER BY i.quantity_on_hand ASC")
             .bind(business_id).fetch_all(&self.db).await.map_err(ApiError::from)?;
         Ok(rows.into_iter().map(|r| LowStockAlert {
             item_id: r.id, sku: r.sku, name: r.name,
@@ -420,7 +428,7 @@ impl InventoryService {
             .bind(req_id).fetch_one(&self.db).await.map_err(ApiError::from)
     }
 
-    pub async fn receive_line(&self, line_id: &str, qty: f64) -> Result<RequisitionLine, ApiError> {
+    pub async fn receive_line(&self, line_id: &str, qty: f64, expiry_date: Option<&str>) -> Result<RequisitionLine, ApiError> {
         sqlx::query("UPDATE requisition_lines SET received_qty=?, received_at=datetime('now') WHERE id=?")
             .bind(qty).bind(line_id).execute(&self.db).await.map_err(ApiError::from)?;
         let line = sqlx::query_as::<_, RequisitionLine>("SELECT * FROM requisition_lines WHERE id=?")
@@ -438,8 +446,76 @@ impl InventoryService {
             sqlx::query("UPDATE requisitions SET status=?, received_at=CASE WHEN ?='received' THEN datetime('now') ELSE received_at END WHERE id=?")
                 .bind(new_status).bind(new_status).bind(&line.requisition_id)
                 .execute(&self.db).await.map_err(ApiError::from)?;
+
+            // A PO receipt is a restock — create a system-numbered batch for this
+            // item so it can be tracked (and its expiry set now, or later from the
+            // Inventory list). Resolve the business id via the requisition itself.
+            if qty > 0.0 {
+                let bid: Option<String> = sqlx::query_scalar("SELECT business_id FROM requisitions WHERE id=?")
+                    .bind(&line.requisition_id).fetch_optional(&self.db).await.map_err(ApiError::from)?;
+                if let Some(bid) = bid {
+                    let _ = self.create_batch(&bid, iid, qty, expiry_date, "restock", Some(line_id), None).await;
+                }
+            }
         }
         Ok(line)
+    }
+
+    // ── Inventory batches ───────────────────────────────────────────────────
+    fn generate_batch_number() -> String {
+        format!("BATCH-{}-{}", chrono::Utc::now().format("%Y%m%d"), &Uuid::new_v4().to_string()[..6].to_uppercase())
+    }
+
+    pub async fn create_batch(&self, business_id: &str, item_id: &str, quantity: f64, expiry_date: Option<&str>, source: &str, requisition_line_id: Option<&str>, notes: Option<&str>) -> Result<InventoryBatch, ApiError> {
+        let id = Uuid::new_v4().to_string();
+        let batch_number = Self::generate_batch_number();
+        sqlx::query("INSERT INTO inventory_batches (id,business_id,item_id,batch_number,quantity,expiry_date,source,requisition_line_id,notes) VALUES (?,?,?,?,?,?,?,?,?)")
+            .bind(&id).bind(business_id).bind(item_id).bind(&batch_number).bind(quantity)
+            .bind(expiry_date.filter(|s| !s.is_empty())).bind(source).bind(requisition_line_id).bind(notes)
+            .execute(&self.db).await.map_err(ApiError::from)?;
+        sqlx::query_as::<_, InventoryBatch>("SELECT * FROM inventory_batches WHERE id=?")
+            .bind(&id).fetch_one(&self.db).await.map_err(ApiError::from)
+    }
+
+    /// Manually record a batch from the Inventory list (e.g. stock that arrived
+    /// outside a purchase order, or backfilling batch records for existing stock).
+    pub async fn create_batch_manual(&self, ctx: &TenantContext, item_id: &str, req: CreateBatchReq) -> Result<InventoryBatch, ApiError> {
+        if req.quantity <= 0.0 { return Err(ApiError::bad_request("Batch quantity must be positive")); }
+        let bid = ctx.business_id.map(|b| b.to_string()).unwrap_or_default();
+        let item_exists: Option<String> = sqlx::query_scalar("SELECT id FROM inventory_items WHERE id=? AND business_id=?")
+            .bind(item_id).bind(&bid).fetch_optional(&self.db).await.map_err(ApiError::from)?;
+        let item_id = item_exists.ok_or_else(|| ApiError::not_found("Item not found"))?;
+        let batch = self.create_batch(&bid, &item_id, req.quantity, req.expiry_date.as_deref(), "manual", None, req.notes.as_deref()).await?;
+        smeazy_common::audit::audit(&self.db, smeazy_common::audit::AuditEntry::new(&bid, "inventory.batch_create", "inventory_batch", format!("Recorded batch {} ({} units)", batch.batch_number, batch.quantity))
+            .actor(ctx.user_id.to_string()).entity(&batch.id, batch.batch_number.clone())).await;
+        Ok(batch)
+    }
+
+    pub async fn list_batches(&self, business_id: &str, item_id: &str) -> Result<Vec<InventoryBatch>, ApiError> {
+        sqlx::query_as::<_, InventoryBatch>(
+            "SELECT * FROM inventory_batches WHERE business_id=? AND item_id=? ORDER BY (expiry_date IS NULL), expiry_date, received_at DESC")
+            .bind(business_id).bind(item_id).fetch_all(&self.db).await.map_err(ApiError::from)
+    }
+
+    /// Batches expiring within `days` days (or already expired), across the
+    /// whole business — used for an expiry alert list.
+    pub async fn expiring_batches(&self, business_id: &str, days: i64) -> Result<Vec<InventoryBatch>, ApiError> {
+        sqlx::query_as::<_, InventoryBatch>(
+            "SELECT * FROM inventory_batches WHERE business_id=? AND expiry_date IS NOT NULL AND date(expiry_date) <= date('now', ?) ORDER BY expiry_date")
+            .bind(business_id).bind(format!("+{} days", days.max(0)))
+            .fetch_all(&self.db).await.map_err(ApiError::from)
+    }
+
+    pub async fn update_batch(&self, ctx: &TenantContext, batch_id: &str, req: UpdateBatchReq) -> Result<InventoryBatch, ApiError> {
+        let bid = ctx.business_id.map(|b| b.to_string()).unwrap_or_default();
+        sqlx::query("UPDATE inventory_batches SET expiry_date=COALESCE(?,expiry_date), quantity=COALESCE(?,quantity), notes=COALESCE(?,notes), updated_at=datetime('now') WHERE id=? AND business_id=?")
+            .bind(&req.expiry_date).bind(req.quantity).bind(&req.notes).bind(batch_id).bind(&bid)
+            .execute(&self.db).await.map_err(ApiError::from)?;
+        let batch = sqlx::query_as::<_, InventoryBatch>("SELECT * FROM inventory_batches WHERE id=? AND business_id=?")
+            .bind(batch_id).bind(&bid).fetch_one(&self.db).await.map_err(ApiError::from)?;
+        smeazy_common::audit::audit(&self.db, smeazy_common::audit::AuditEntry::new(&bid, "inventory.batch_update", "inventory_batch", format!("Updated batch {}", batch.batch_number))
+            .actor(ctx.user_id.to_string()).entity(&batch.id, batch.batch_number.clone())).await;
+        Ok(batch)
     }
 }
 
@@ -487,9 +563,11 @@ impl InventoryService {
             }
             if c.quantity <= 0.0 { return Err(ApiError::bad_request("Component quantity must be positive")); }
         }
-        // Mark the product assembled or not.
-        sqlx::query("UPDATE inventory_items SET is_assembled=?, updated_at=datetime('now') WHERE id=? AND business_id=?")
-            .bind(if req.is_assembled { 1i64 } else { 0 }).bind(product_id).bind(&bid)
+        // Mark the product assembled or not. Dropping the recipe altogether also
+        // resets production_type back to one_step — "staged" only makes sense
+        // when there's a recipe to stage the ingredients from.
+        sqlx::query("UPDATE inventory_items SET is_assembled=?, production_type=CASE WHEN ?=0 THEN 'one_step' ELSE production_type END, updated_at=datetime('now') WHERE id=? AND business_id=?")
+            .bind(if req.is_assembled { 1i64 } else { 0 }).bind(if req.is_assembled { 1i64 } else { 0 }).bind(product_id).bind(&bid)
             .execute(&self.db).await.map_err(ApiError::from)?;
         // Replace components.
         sqlx::query("DELETE FROM recipe_components WHERE product_id=? AND business_id=?")
@@ -524,13 +602,19 @@ impl InventoryService {
         Ok(BulkDeleteResult { deactivated: deactivated.len(), ids: deactivated })
     }
 
-    /// Deplete ingredient stock for an assembled product being sold or spoiled.
-    /// Returns true if the product was assembled (ingredients depleted), false if
-    /// it's a direct-stock product (caller should deduct the product's own stock).
+    /// Deplete ingredient stock for a One-step assembled product being sold or
+    /// spoiled. Returns true if ingredients were depleted this way, false if the
+    /// caller should instead deduct the product's own stock directly — which is
+    /// the right thing both for plain direct-stock products AND for a Staged
+    /// kitchen item (its ingredients were already deducted back when the batch
+    /// was put into production; selling/spoiling it now consumes the already-
+    /// processed quantity_on_hand, not the raw ingredients a second time).
     pub async fn deplete_ingredients(&self, business_id: &str, product_id: &str, units: f64, movement: &str, order_id: Option<&str>) -> Result<bool, ApiError> {
-        let is_assembled: Option<i64> = sqlx::query_scalar("SELECT is_assembled FROM inventory_items WHERE id=? AND business_id=?")
+        let row: Option<(i64, String)> = sqlx::query_as(
+            "SELECT is_assembled, production_type FROM inventory_items WHERE id=? AND business_id=?")
             .bind(product_id).bind(business_id).fetch_optional(&self.db).await.map_err(ApiError::from)?;
-        if is_assembled != Some(1) { return Ok(false); }
+        let is_one_step_assembled = match row { Some((1, pt)) => pt == "one_step", _ => false };
+        if !is_one_step_assembled { return Ok(false); }
 
         let components = sqlx::query_as::<_, (String, f64)>(
             "SELECT ingredient_id, quantity FROM recipe_components WHERE product_id=? AND business_id=?")
@@ -545,5 +629,77 @@ impl InventoryService {
                 .execute(&self.db).await.map_err(ApiError::from)?;
         }
         Ok(true)
+    }
+
+    // ── Staged kitchen production ─────────────────────────────────────────────
+    /// Put a batch of a Staged item into production: deducts its recipe's
+    /// ingredients right away (same math as deplete_ingredients) and moves the
+    /// produced quantity into wip_quantity — the "processing" status (e.g. raw
+    /// beef has become formed samosas, not yet fried). Real-time stock levels
+    /// for the raw ingredient (beef) reflect the deduction immediately, even
+    /// though the samosas themselves aren't sellable yet.
+    pub async fn process_batch(&self, ctx: &TenantContext, product_id: &str, req: ProcessBatchReq) -> Result<InventoryItem, ApiError> {
+        if req.quantity <= 0.0 { return Err(ApiError::bad_request("Quantity to process must be positive")); }
+        let bid = ctx.business_id.map(|b| b.to_string()).unwrap_or_default();
+        let row: Option<(i64, String)> = sqlx::query_as("SELECT is_assembled, production_type FROM inventory_items WHERE id=? AND business_id=?")
+            .bind(product_id).bind(&bid).fetch_optional(&self.db).await.map_err(ApiError::from)?;
+        let is_staged = match row { Some((1, pt)) => pt == "staged", Some(_) => false, None => return Err(ApiError::not_found("Item not found")) };
+        if !is_staged { return Err(ApiError::bad_request("Only a Staged item with a recipe can be put into production")); }
+
+        let components = sqlx::query_as::<_, (String, f64)>(
+            "SELECT ingredient_id, quantity FROM recipe_components WHERE product_id=? AND business_id=?")
+            .bind(product_id).bind(&bid).fetch_all(&self.db).await.map_err(ApiError::from)?;
+        if components.is_empty() { return Err(ApiError::bad_request("This item has no recipe components to consume")); }
+
+        for (ing_id, per_unit) in &components {
+            let consumed = per_unit * req.quantity;
+            let on_hand: f64 = sqlx::query_scalar("SELECT quantity_on_hand FROM inventory_items WHERE id=?")
+                .bind(ing_id).fetch_one(&self.db).await.map_err(ApiError::from)?;
+            if on_hand < consumed - 0.0001 {
+                return Err(ApiError::bad_request(format!("Not enough ingredient stock to process {} units", req.quantity)));
+            }
+        }
+        for (ing_id, per_unit) in &components {
+            let consumed = per_unit * req.quantity;
+            sqlx::query("UPDATE inventory_items SET quantity_on_hand = quantity_on_hand - ?, updated_at=datetime('now') WHERE id=?")
+                .bind(consumed).bind(ing_id).execute(&self.db).await.map_err(ApiError::from)?;
+            sqlx::query("INSERT INTO inventory_movements (id,item_id,movement_type,delta_qty,notes) VALUES (?,?,'kitchen_process_start',?,?)")
+                .bind(Uuid::new_v4().to_string()).bind(ing_id).bind(-consumed)
+                .bind(format!("Put into production for staged item ({} units)", req.quantity))
+                .execute(&self.db).await.map_err(ApiError::from)?;
+        }
+        sqlx::query("UPDATE inventory_items SET wip_quantity = wip_quantity + ?, updated_at=datetime('now') WHERE id=?")
+            .bind(req.quantity).bind(product_id).execute(&self.db).await.map_err(ApiError::from)?;
+
+        let item = self.get_item(product_id).await?;
+        smeazy_common::audit::audit(&self.db, smeazy_common::audit::AuditEntry::new(&bid, "kitchen.process_start", "inventory_item", format!("Started processing {} × {} (ingredients deducted)", req.quantity, item.name))
+            .actor(ctx.user_id.to_string()).entity(product_id, item.name.clone())
+            .meta(&serde_json::json!({ "quantity": req.quantity, "wip_quantity": item.wip_quantity }))).await;
+        Ok(item)
+    }
+
+    /// Mark units that were in the "processing" stage as finished — moves them
+    /// from wip_quantity into quantity_on_hand (ready-to-eat, sellable stock).
+    pub async fn complete_processing(&self, ctx: &TenantContext, product_id: &str, req: CompleteProcessingReq) -> Result<InventoryItem, ApiError> {
+        if req.quantity <= 0.0 { return Err(ApiError::bad_request("Quantity to complete must be positive")); }
+        let bid = ctx.business_id.map(|b| b.to_string()).unwrap_or_default();
+        let wip: Option<f64> = sqlx::query_scalar("SELECT wip_quantity FROM inventory_items WHERE id=? AND business_id=? AND production_type='staged'")
+            .bind(product_id).bind(&bid).fetch_optional(&self.db).await.map_err(ApiError::from)?;
+        let wip = wip.ok_or_else(|| ApiError::not_found("Staged item not found"))?;
+        if req.quantity > wip + 0.0001 {
+            return Err(ApiError::bad_request(format!("Only {} unit(s) are in processing", wip)));
+        }
+        sqlx::query("UPDATE inventory_items SET wip_quantity = wip_quantity - ?, quantity_on_hand = quantity_on_hand + ?, updated_at=datetime('now') WHERE id=?")
+            .bind(req.quantity).bind(req.quantity).bind(product_id).execute(&self.db).await.map_err(ApiError::from)?;
+        sqlx::query("INSERT INTO inventory_movements (id,item_id,movement_type,delta_qty,notes) VALUES (?,?,'kitchen_process_complete',?,?)")
+            .bind(Uuid::new_v4().to_string()).bind(product_id).bind(req.quantity)
+            .bind(format!("Finished processing {} units — now ready to sell", req.quantity))
+            .execute(&self.db).await.map_err(ApiError::from)?;
+
+        let item = self.get_item(product_id).await?;
+        smeazy_common::audit::audit(&self.db, smeazy_common::audit::AuditEntry::new(&bid, "kitchen.process_complete", "inventory_item", format!("Finished processing {} × {} — now ready-to-sell", req.quantity, item.name))
+            .actor(ctx.user_id.to_string()).entity(product_id, item.name.clone())
+            .meta(&serde_json::json!({ "quantity": req.quantity, "on_hand": item.quantity_on_hand, "wip_remaining": item.wip_quantity }))).await;
+        Ok(item)
     }
 }

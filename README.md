@@ -1,6 +1,14 @@
-# SMEazy POS — Offline-First Hospitality Point of Sale (v2.5)
+# SMEazy POS — Offline-First Hospitality Point of Sale (v2.6)
 
 A modular, production-grade point-of-sale platform built for hospitality businesses (bars, restaurants, pools, accommodation). **Fully offline-first**: the Rust binary embeds SQLite and auto-creates the database on first run — no Docker, no PostgreSQL, no network required. Ships as a native Windows desktop app via Tauri 2, or run the API + web frontend separately for development.
+
+## What's new in 2.6
+
+**Customer tabs / partial payments.** At checkout, a cashier or waiter can attach a customer to an order by typing a name into a live search box — matching existing customers are suggested as they type (with their outstanding balance shown), or a new customer is created automatically if no match exists. With a customer attached, an order can be checked out with a partial payment, opening a **tab**: goods are served and inventory is still deducted, but the unpaid balance is tracked against that customer. A new **Customers** page lists every customer, their open tabs, and total balance due, and lets staff settle a tab (in full or in part) from the customer's order history.
+
+**Inventory batch tracking & expiry dates.** Every inventory item (ingredient or product) can now be tracked by **batch**, each with a system-generated batch number. Receiving a purchase order line automatically creates a batch and lets the storekeeper set its expiry date on the spot; batches can also be added or have their expiry set manually at any time from the Inventory list via the new Batches view per item.
+
+**Staged kitchen production for made-from-scratch items.** Kitchen products can now be marked **One-step** (default — ingredients are deducted directly from stock when the product is sold, e.g. Nyama Choma) or **Staged** (the product has an intermediate **processing** state before it's ready to sell, e.g. samosas or burger patties made ahead and held in the freezer). For staged items, a **Start processing** action deducts the recipe's raw ingredients up front and moves the batch into a "processing" (work-in-progress) state; a **Complete processing** action then moves finished, ready-to-eat quantity into sellable stock. This keeps raw ingredient levels (e.g. beef) accurate in real time even when some of it has already been turned into a not-yet-sold prepared item.
 
 ## What's new in 2.5
 
@@ -60,8 +68,8 @@ This prints a **public key** and writes a **private key** file (optionally passw
 
 ### Build a versioned release
 ```bash
-git tag v2.5.0
-git push origin v2.5.0
+git tag v2.6.0
+git push origin v2.6.0
 ```
 The workflow builds, signs, and publishes a GitHub Release with the installer and `latest.json` attached — nothing further to do. Existing installs of the app will find this via **Settings → Check for Updates**.
 

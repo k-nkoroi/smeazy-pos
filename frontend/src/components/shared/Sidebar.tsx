@@ -1,5 +1,5 @@
 import { Link, useLocation, useNavigate } from 'react-router-dom'
-import { LayoutDashboard, Grid3X3, UtensilsCrossed, Package, BarChart2, Users, User, LogOut, Monitor, CreditCard, ScrollText, Settings, BedDouble } from 'lucide-react'
+import { LayoutDashboard, Grid3X3, UtensilsCrossed, Package, BarChart2, Users, User, LogOut, Monitor, CreditCard, ScrollText, Settings, BedDouble, Wallet } from 'lucide-react'
 import { useAuthStore, useDeviceStore } from '../../hooks/useAuth'
 import { can, isWaitstaffOnly } from '../../lib/permissions'
 import clsx from 'clsx'
@@ -18,6 +18,7 @@ export function Sidebar() {
     { href: '/kitchen',   label: 'Kitchen',    icon: UtensilsCrossed, show: can(roles, 'kitchen') },
     { href: '/inventory', label: 'Inventory',  icon: Package,        show: can(roles, 'inventory') },
     { href: '/accommodation', label: 'Accommodation', icon: BedDouble, show: can(roles, 'accommodation') },
+    { href: '/customers', label: 'Customers',  icon: Wallet,         show: can(roles, 'customers') },
     { href: '/analytics', label: 'Analytics',  icon: BarChart2,      show: can(roles, 'analytics') },
     { href: '/registers', label: 'Registers',  icon: CreditCard,     show: can(roles, 'registers') },
     { href: '/staff',     label: 'Staff',      icon: Users,          show: can(roles, 'staff') },

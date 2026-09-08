@@ -1,9 +1,9 @@
 import { useEffect, useState, useCallback } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
-import { ArrowLeft, Search, Trash2, ChefHat, CreditCard, CheckCircle, Truck, Users, Printer, Minus, Plus as PlusIcon } from 'lucide-react'
+import { ArrowLeft, Search, Trash2, ChefHat, CreditCard, CheckCircle, Truck, Users, UserPlus, Printer, Minus, Plus as PlusIcon } from 'lucide-react'
 import toast from 'react-hot-toast'
 import clsx from 'clsx'
-import { posApi, inventoryApi, authApi } from '../lib/api'
+import { posApi, inventoryApi, authApi, customersApi } from '../lib/api'
 import { useAuthStore, useDeviceStore } from '../hooks/useAuth'
 import { Spinner } from '../components/shared/Spinner'
 
@@ -32,6 +32,12 @@ export default function PosOrderPage() {
   const [sendingKitchen, setSendingKitchen] = useState(false)
   const [showWaitstaffModal, setShowWaitstaffModal] = useState(false)
   const [staffList, setStaffList] = useState<any[]>([])
+  const [showCustomerModal, setShowCustomerModal] = useState(false)
+  const [customerQuery, setCustomerQuery] = useState('')
+  const [customerPhone, setCustomerPhone] = useState('')
+  const [customerSuggestions, setCustomerSuggestions] = useState<any[]>([])
+  const [attachingCustomer, setAttachingCustomer] = useState(false)
+  const [partialMode, setPartialMode] = useState(false)
   const [receipt, setReceipt] = useState<any|null>(null)   // checkout result for printable receipt
   const [qtyBusy, setQtyBusy] = useState<string|null>(null)
   const [editingQtyId, setEditingQtyId] = useState<string|null>(null)
@@ -61,7 +67,8 @@ export default function PosOrderPage() {
   const totalPaid = paymentLines.filter(p=>p.confirmed).reduce((s,p)=>s+(parseFloat(p.amount)||0),0)
   const remaining = Math.max(0, total - (parseFloat(cartDiscount)||0) - totalPaid)
   const changeDue = Math.max(0, totalPaid - total + (parseFloat(cartDiscount)||0))
-  const canComplete = remaining <= 0.01
+  const canOpenTab = partialMode && !!order?.customer_id
+  const canComplete = remaining <= 0.01 || canOpenTab
 
   // Register scoping: if a register is selected, only show products whose
   // category department is in the register's allowed departments.
@@ -113,6 +120,25 @@ export default function PosOrderPage() {
     setShowWaitstaffModal(false); reload(); toast.success(`Assigned to ${staffName}`)
   }
 
+  // Live suggestions as the waiter types a customer's name into the search bar.
+  useEffect(() => {
+    if (!showCustomerModal || !customerQuery.trim()) { setCustomerSuggestions([]); return }
+    let cancelled = false
+    customersApi.search(customerQuery.trim()).then(r => { if (!cancelled) setCustomerSuggestions(r.data.data ?? []) }).catch(()=>{})
+    return () => { cancelled = true }
+  }, [customerQuery, showCustomerModal])
+
+  async function attachCustomer(customerId?: string) {
+    if (!customerQuery.trim()) return toast.error('Enter a customer name')
+    setAttachingCustomer(true)
+    try {
+      await posApi.attachCustomer(orderId!, { customer_id: customerId, name: customerQuery.trim(), phone: customerPhone.trim() || undefined })
+      setShowCustomerModal(false); reload()
+      toast.success(customerId ? 'Customer attached' : `New customer "${customerQuery.trim()}" created`)
+    } catch (e:any) { toast.error(e.response?.data?.error?.message ?? 'Failed to attach customer') }
+    finally { setAttachingCustomer(false) }
+  }
+
   function confirmPaymentLine(idx:number) {
     const line = paymentLines[idx]
     const amt = parseFloat(line.amount)
@@ -136,8 +162,9 @@ export default function PosOrderPage() {
         discount: disc>0?disc:undefined,
         discount_type: directorRate ?? undefined,
         authorized_by: directorRate ? user?.id : undefined,
+        allow_partial: canOpenTab ? true : undefined,
       })
-      setReceipt({ ...res.data.data, items:[...items], table_name:order.table_name, waitstaff_name:order.waitstaff_name, paid_at:new Date(), directorRate })
+      setReceipt({ ...res.data.data, items:[...items], table_name:order.table_name, waitstaff_name:order.waitstaff_name, customer_name:order.customer_name, paid_at:new Date(), directorRate })
     } catch (err:any) { toast.error(err.response?.data?.error?.message??'Payment failed') }
     finally { setProcessingPayment(false) }
   }
@@ -156,6 +183,10 @@ export default function PosOrderPage() {
           <span className="text-slate-400">|</span>
           <button onClick={()=>setShowWaitstaffModal(true)} className="flex items-center gap-1.5 text-slate-300 hover:text-white hover:bg-slate-700 px-2 py-1 rounded-lg transition-colors">
             <Users className="w-3.5 h-3.5 text-slate-400"/><span>{order.waitstaff_name??'Assign staff'}</span>
+          </button>
+          <span className="text-slate-400">|</span>
+          <button onClick={()=>{setShowCustomerModal(true); setCustomerQuery(order.customer_name??''); setCustomerPhone(order.customer_phone??'')}} className="flex items-center gap-1.5 text-slate-300 hover:text-white hover:bg-slate-700 px-2 py-1 rounded-lg transition-colors">
+            <UserPlus className="w-3.5 h-3.5 text-slate-400"/><span>{order.customer_name??'Add customer'}</span>
           </button>
         </div>
         <div className="flex gap-2 shrink-0">
@@ -368,6 +399,21 @@ export default function PosOrderPage() {
               </div>
               {!canComplete&&totalPaid>0&&<div className="mt-4 bg-slate-800 rounded-xl p-4 flex justify-between"><span className="text-slate-400">Remaining</span><span className="text-amber-400 font-bold">KES {remaining.toFixed(2)}</span></div>}
               {changeDue>0.01&&<div className="mt-3 bg-emerald-900 border border-emerald-500 rounded-xl p-4 flex justify-between"><span className="text-emerald-300 font-semibold">💵 Change due</span><span className="text-emerald-300 font-bold text-xl">KES {changeDue.toFixed(2)}</span></div>}
+              {remaining>0.01 && (
+                order.customer_id ? (
+                  <label className="mt-4 flex items-start gap-3 bg-slate-800 border border-amber-600/50 rounded-xl p-4 cursor-pointer">
+                    <input type="checkbox" checked={partialMode} onChange={e=>setPartialMode(e.target.checked)} className="w-4 h-4 mt-0.5"/>
+                    <div>
+                      <p className="text-amber-300 text-sm font-semibold">Open a tab for {order.customer_name}</p>
+                      <p className="text-slate-400 text-xs mt-0.5">Accept a partial payment now and carry the KES {remaining.toFixed(2)} balance on {order.customer_name}'s account, to be settled later from the Customers page.</p>
+                    </div>
+                  </label>
+                ) : (
+                  <div className="mt-4 bg-slate-800 border border-slate-700 rounded-xl p-4 text-xs text-slate-400">
+                    Attach a customer (top of screen) to accept a partial payment and open a tab.
+                  </div>
+                )
+              )}
             </div>
             <div className="w-72 shrink-0 flex flex-col">
               <h3 className="text-white font-semibold mb-3">Order summary</h3>
@@ -380,8 +426,8 @@ export default function PosOrderPage() {
                 ))}
               </div>
               <button onClick={processCheckout} disabled={!canComplete||processingPayment}
-                className={clsx('w-full py-4 rounded-xl text-white font-bold text-lg mt-auto',canComplete?'bg-emerald-600 hover:bg-emerald-500 shadow-lg':'bg-slate-700 cursor-not-allowed opacity-50')}>
-                {processingPayment?<Spinner size="sm"/>:canComplete?'✅ Complete Order':`Remaining: KES ${remaining.toFixed(2)}`}
+                className={clsx('w-full py-4 rounded-xl text-white font-bold text-lg mt-auto',canComplete?(canOpenTab&&remaining>0.01?'bg-amber-600 hover:bg-amber-500 shadow-lg':'bg-emerald-600 hover:bg-emerald-500 shadow-lg'):'bg-slate-700 cursor-not-allowed opacity-50')}>
+                {processingPayment?<Spinner size="sm"/>:canComplete?(canOpenTab&&remaining>0.01?`📒 Open Tab (KES ${remaining.toFixed(2)} owing)`:'✅ Complete Order'):`Remaining: KES ${remaining.toFixed(2)}`}
               </button>
               <button onClick={()=>setTab('order')} className="w-full mt-2 text-slate-400 hover:text-white py-2 text-sm">← Back to order</button>
             </div>
@@ -406,6 +452,46 @@ export default function PosOrderPage() {
               {staffList.length===0&&<p className="text-slate-400 text-sm text-center py-4">No staff found — add staff from the Staff page.</p>}
             </div>
             <button onClick={()=>setShowWaitstaffModal(false)} className="btn-secondary w-full">Cancel</button>
+          </div>
+        </div>
+      )}
+
+      {/* Customer modal — search-as-you-type, or create a new customer */}
+      {showCustomerModal&&(
+        <div className="fixed inset-0 bg-black bg-opacity-70 flex items-center justify-center z-50 print:hidden">
+          <div className="bg-slate-800 rounded-2xl p-6 w-96 border border-slate-600">
+            <h2 className="text-white font-bold text-lg mb-1 flex items-center gap-2"><UserPlus className="w-5 h-5"/>Customer</h2>
+            <p className="text-slate-400 text-xs mb-4">Type a name to search existing customers, or enter a new one — they'll be created automatically.</p>
+            <div className="relative mb-3">
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400"/>
+              <input autoFocus value={customerQuery} onChange={e=>setCustomerQuery(e.target.value)}
+                className="w-full bg-slate-700 border border-slate-600 rounded-lg pl-9 pr-4 py-2.5 text-white text-sm placeholder:text-slate-500 focus:outline-none focus:border-brand-500"
+                placeholder="Customer name..."/>
+            </div>
+            <input value={customerPhone} onChange={e=>setCustomerPhone(e.target.value)}
+              className="w-full bg-slate-700 border border-slate-600 rounded-lg px-4 py-2.5 text-white text-sm placeholder:text-slate-500 focus:outline-none focus:border-brand-500 mb-4"
+              placeholder="Phone (optional)"/>
+            {customerSuggestions.length>0 && (
+              <div className="mb-4 max-h-48 overflow-y-auto space-y-1.5">
+                <p className="text-slate-500 text-xs uppercase tracking-wide">Matching customers</p>
+                {customerSuggestions.map((c:any)=>(
+                  <button key={c.id} onClick={()=>attachCustomer(c.id)} disabled={attachingCustomer}
+                    className="w-full text-left px-3 py-2 rounded-lg border border-slate-600 hover:border-brand-500 hover:bg-slate-700 transition-colors">
+                    <p className="text-white text-sm font-medium">{c.name}</p>
+                    <div className="flex items-center justify-between">
+                      <p className="text-slate-400 text-xs">{c.phone??'no phone on file'}</p>
+                      {c.balance_due>0.01 && <p className="text-amber-400 text-xs font-semibold">Owes KES {c.balance_due.toLocaleString()}</p>}
+                    </div>
+                  </button>
+                ))}
+              </div>
+            )}
+            <div className="flex gap-3">
+              <button onClick={()=>attachCustomer(undefined)} disabled={attachingCustomer||!customerQuery.trim()} className="btn-primary flex-1">
+                {attachingCustomer?<Spinner size="sm"/>:'Use this customer'}
+              </button>
+              <button onClick={()=>setShowCustomerModal(false)} className="btn-secondary">Cancel</button>
+            </div>
           </div>
         </div>
       )}
@@ -442,6 +528,9 @@ export default function PosOrderPage() {
                 <div key={p.id} className="flex justify-between text-slate-500"><span className="uppercase">{p.method}{p.reference?` (${p.reference})`:''}</span><span>{p.amount.toLocaleString()}</span></div>
               ))}
               {receipt.change_due>0.01&&<div className="flex justify-between font-bold"><span>CHANGE</span><span>KES {receipt.change_due.toFixed(2)}</span></div>}
+              {receipt.status==='tab'&&receipt.balance_due>0.01&&(
+                <div className="flex justify-between font-bold text-amber-700"><span>ON TAB · {receipt.customer_name}</span><span>KES {receipt.balance_due.toFixed(2)}</span></div>
+              )}
             </div>
             <div className="px-6 pb-2 text-center text-[10px] text-slate-400 font-mono">Price inclusive of 16% VAT</div>
             <div className="p-4 text-center text-xs text-slate-400">Thank you! Powered by SMEazy POS</div>

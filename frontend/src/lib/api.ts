@@ -58,11 +58,20 @@ export const posApi = {
   updateItemQuantity: (orderId: string, itemId: string, quantity: number) => api.put(`/pos/orders/${orderId}/items/${itemId}/quantity`, { quantity }),
   updateItemStatus: (itemId: string, d: any)  => api.put(`/pos/items/${itemId}/status`, d),
   updateWaitstaff:  (orderId: string, d: any) => api.put(`/pos/orders/${orderId}/waitstaff`, d),
+  attachCustomer:   (orderId: string, d: any) => api.put(`/pos/orders/${orderId}/customer`, d),
   applyDiscount:    (orderId: string, d: any) => api.post(`/pos/orders/${orderId}/discount`, d),
   sendToKitchen:    (orderId: string, d: any) => api.post(`/pos/orders/${orderId}/kitchen`, d),
   checkout:         (orderId: string, d: any) => api.post(`/pos/orders/${orderId}/checkout`, d),
+  payTab:           (orderId: string, d: any) => api.post(`/pos/orders/${orderId}/pay`, d),
   voidOrder:        (orderId: string)         => api.post(`/pos/orders/${orderId}/void`),
   summary:          (date?: string)           => api.get('/pos/summary', { params: { date } }),
+}
+
+export const customersApi = {
+  search:  (q: string)      => api.get('/customers', { params: { search: q } }),
+  list:    ()               => api.get('/customers'),
+  create:  (d: any)         => api.post('/customers', d),
+  get:     (id: string)     => api.get(`/customers/${id}`),
 }
 
 export const accommodationApi = {
@@ -98,6 +107,12 @@ export const inventoryApi = {
   getRequisition:    (id: string)  => api.get(`/inventory/requisitions/${id}`),
   submitRequisition: (id: string)  => api.post(`/inventory/requisitions/${id}/submit`),
   receiveLine:       (lineId: string, d: any) => api.put(`/inventory/requisition-lines/${lineId}/receive`, d),
+  listBatches:       (itemId: string)         => api.get(`/inventory/items/${itemId}/batches`),
+  createBatch:       (itemId: string, d: any) => api.post(`/inventory/items/${itemId}/batches`, d),
+  updateBatch:       (batchId: string, d: any) => api.put(`/inventory/batches/${batchId}`, d),
+  expiringBatches:   (days?: number)          => api.get('/inventory/batches/expiring', { params: { days } }),
+  processBatch:      (itemId: string, d: any) => api.post(`/inventory/items/${itemId}/process`, d),
+  completeProcessing: (itemId: string, d: any) => api.post(`/inventory/items/${itemId}/complete-processing`, d),
 }
 
 export const kitchenApi = {

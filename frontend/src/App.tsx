@@ -16,6 +16,7 @@ import PosOrderPage   from './pages/PosOrderPage'
 import KitchenPage    from './pages/KitchenPage'
 import InventoryPage  from './pages/InventoryPage'
 import AnalyticsPage  from './pages/AnalyticsPage'
+import CustomersPage  from './pages/CustomersPage'
 
 /** Requires a live session; redirects to login if the token is gone (e.g. after restart). */
 function RequireAuth({ children }: { children: React.ReactNode }) {
@@ -68,6 +69,7 @@ export default function App() {
       <Route path="/accommodation" element={<RequireCap cap="accommodation"><PosLockGuard><AccommodationPage /></PosLockGuard></RequireCap>} />
       <Route path="/inventory" element={<RequireCap cap="inventory"><PosLockGuard><InventoryPage /></PosLockGuard></RequireCap>} />
       <Route path="/analytics" element={<RequireCap cap="analytics"><PosLockGuard><AnalyticsPage /></PosLockGuard></RequireCap>} />
+      <Route path="/customers" element={<RequireCap cap="customers"><PosLockGuard><CustomersPage /></PosLockGuard></RequireCap>} />
 
       {/* Profile — everyone with a session */}
       <Route path="/profile" element={<RequireAuth><PosLockGuard><ProfilePage /></PosLockGuard></RequireAuth>} />

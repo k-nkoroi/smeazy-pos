@@ -34,12 +34,13 @@ export type Capability =
   | 'logs'        // audit log view (admin/owner only)
   | 'settings'    // business settings
   | 'accommodation' // Room status board (view for all dashboard roles; manual Ready action gated server-side to Storekeeper+)
+  | 'customers'   // Customer directory + tab (partial-payment) settlement
 
 const ROLE_CAPS: Record<string, Capability[]> = {
-  entrepreneur:      ['dashboard','pos','kitchen','inventory','inventory_edit','analytics','staff_analytics','staff','registers','logs','settings','accommodation'],
-  admin_staff:       ['dashboard','pos','kitchen','inventory','inventory_edit','analytics','staff_analytics','staff','registers','logs','settings','accommodation'],
-  executive_staff:   ['dashboard','pos','kitchen','analytics','staff_analytics','inventory','inventory_edit','accommodation'],
-  cashier:           ['dashboard','pos','kitchen','analytics','inventory','accommodation'],  // inventory VIEW only
+  entrepreneur:      ['dashboard','pos','kitchen','inventory','inventory_edit','analytics','staff_analytics','staff','registers','logs','settings','accommodation','customers'],
+  admin_staff:       ['dashboard','pos','kitchen','inventory','inventory_edit','analytics','staff_analytics','staff','registers','logs','settings','accommodation','customers'],
+  executive_staff:   ['dashboard','pos','kitchen','analytics','staff_analytics','inventory','inventory_edit','accommodation','customers'],
+  cashier:           ['dashboard','pos','kitchen','analytics','inventory','accommodation','customers'],  // inventory VIEW only
   storekeeper:       ['dashboard','inventory','inventory_edit','accommodation'],
   operational_staff: ['pos','kitchen'],          // NO dashboard
   guest_contractor:  [],                         // profile only

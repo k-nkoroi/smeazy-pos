@@ -1,5 +1,5 @@
 import { useEffect, useState, useRef } from 'react'
-import { Plus, Upload, Download, AlertTriangle, Search, Edit2, Package, Tag, ClipboardList, ShoppingCart, Truck, Printer, CheckCircle2, Building, Soup, ChefHat, X, Trash2 } from 'lucide-react'
+import { Plus, Upload, Download, AlertTriangle, Search, Edit2, Package, Tag, ClipboardList, ShoppingCart, Truck, Printer, CheckCircle2, Building, Soup, ChefHat, X, Trash2, Layers, PlayCircle, CheckSquare } from 'lucide-react'
 import toast from 'react-hot-toast'
 import clsx from 'clsx'
 import { Layout } from '../components/shared/Layout'
@@ -11,7 +11,7 @@ import { Spinner } from '../components/shared/Spinner'
 
 type Tab = 'items'|'ingredients'|'categories'|'stocktake'|'orders'|'suppliers'|'alerts'
 
-const EMPTY_ITEM = { name:'',sku:'',category_id:'',sale_price:'',cost_price:'',quantity:'',reorder_level:'5',unit_of_measure:'unit',image_url:'',tags:'' }
+const EMPTY_ITEM = { name:'',sku:'',category_id:'',sale_price:'',cost_price:'',quantity:'',reorder_level:'5',unit_of_measure:'unit',image_url:'',tags:'',production_type:'one_step' }
 const EMPTY_SUPPLIER = { name:'',contact_name:'',phone:'',email:'',address:'',notes:'' }
 
 export default function InventoryPage() {
@@ -63,6 +63,22 @@ export default function InventoryPage() {
   const [poNotes, setPoNotes] = useState('')
   const [activePO, setActivePO] = useState<any|null>(null)
   const [receiveQtys, setReceiveQtys] = useState<Record<string,string>>({})
+  const [receiveExpiries, setReceiveExpiries] = useState<Record<string,string>>({})
+
+  // Batch tracking state
+  const [batchesItem, setBatchesItem] = useState<any|null>(null)
+  const [batches, setBatches] = useState<any[]>([])
+  const [batchesLoading, setBatchesLoading] = useState(false)
+  const [newBatchQty, setNewBatchQty] = useState('')
+  const [newBatchExpiry, setNewBatchExpiry] = useState('')
+  const [editingBatchId, setEditingBatchId] = useState<string|null>(null)
+  const [editingBatchExpiry, setEditingBatchExpiry] = useState('')
+
+  // Staged kitchen production state
+  const [processItem, setProcessItem] = useState<any|null>(null)
+  const [processQty, setProcessQty] = useState('')
+  const [completeQty, setCompleteQty] = useState('')
+  const [processBusy, setProcessBusy] = useState(false)
 
   async function load() {
     setLoading(true)
@@ -110,6 +126,7 @@ export default function InventoryPage() {
       quantity: itemForm.quantity?parseFloat(itemForm.quantity):0,
       reorder_level: parseFloat(itemForm.reorder_level||'5'),
       unit_of_measure: itemForm.unit_of_measure, image_url: itemForm.image_url||undefined, tags: itemForm.tags||undefined,
+      production_type: itemType==='product' ? (itemForm.production_type||'one_step') : undefined,
     }
     try {
       if (editItem) { await inventoryApi.updateItem(editItem.id, payload); toast.success('Saved'); setEditItem(null) }
@@ -119,7 +136,56 @@ export default function InventoryPage() {
   }
   function openEditItem(it:any) {
     setEditItem(it)
-    setItemForm({ name:it.name, sku:it.sku, category_id:it.category_id??'', sale_price:it.sale_price?.toString()??'', cost_price:it.cost_price?.toString()??'', quantity:it.quantity_on_hand.toString(), reorder_level:it.reorder_level.toString(), unit_of_measure:it.unit_of_measure, image_url:it.image_url??'', tags:it.tags??'' })
+    setItemForm({ name:it.name, sku:it.sku, category_id:it.category_id??'', sale_price:it.sale_price?.toString()??'', cost_price:it.cost_price?.toString()??'', quantity:it.quantity_on_hand.toString(), reorder_level:it.reorder_level.toString(), unit_of_measure:it.unit_of_measure, image_url:it.image_url??'', tags:it.tags??'', production_type: it.production_type||'one_step' })
+  }
+
+  // ── Batch handlers ───────────────────────────────────────────────────────
+  async function openBatches(item: any) {
+    setBatchesItem(item); setBatchesLoading(true); setNewBatchQty(''); setNewBatchExpiry('')
+    const res = await inventoryApi.listBatches(item.id).catch(()=>null)
+    setBatches(res?.data.data ?? [])
+    setBatchesLoading(false)
+  }
+  async function createBatch() {
+    const q = parseFloat(newBatchQty)
+    if (isNaN(q) || q <= 0) return toast.error('Enter a valid quantity')
+    try {
+      await inventoryApi.createBatch(batchesItem.id, { quantity: q, expiry_date: newBatchExpiry||undefined })
+      toast.success('Batch recorded'); setNewBatchQty(''); setNewBatchExpiry('')
+      openBatches(batchesItem); load()
+    } catch (e:any) { toast.error(e.response?.data?.error?.message ?? 'Failed to record batch') }
+  }
+  async function saveBatchExpiry(batchId: string) {
+    try {
+      await inventoryApi.updateBatch(batchId, { expiry_date: editingBatchExpiry||undefined })
+      setEditingBatchId(null)
+      openBatches(batchesItem)
+    } catch { toast.error('Failed to update batch') }
+  }
+
+  // ── Staged production handlers ───────────────────────────────────────────
+  function openProcess(item: any) { setProcessItem(item); setProcessQty(''); setCompleteQty('') }
+  async function submitProcess() {
+    const q = parseFloat(processQty)
+    if (isNaN(q) || q <= 0) return toast.error('Enter a valid quantity')
+    setProcessBusy(true)
+    try {
+      const res = await inventoryApi.processBatch(processItem.id, { quantity: q })
+      toast.success(`Started processing ${q} × ${processItem.name}`)
+      setProcessItem(res.data.data); setProcessQty(''); load()
+    } catch (e:any) { toast.error(e.response?.data?.error?.message ?? 'Failed to start processing') }
+    finally { setProcessBusy(false) }
+  }
+  async function submitCompleteProcessing() {
+    const q = parseFloat(completeQty)
+    if (isNaN(q) || q <= 0) return toast.error('Enter a valid quantity')
+    setProcessBusy(true)
+    try {
+      const res = await inventoryApi.completeProcessing(processItem.id, { quantity: q })
+      toast.success(`${q} × ${processItem.name} now ready to sell`)
+      setProcessItem(res.data.data); setCompleteQty(''); load()
+    } catch (e:any) { toast.error(e.response?.data?.error?.message ?? 'Failed to complete processing') }
+    finally { setProcessBusy(false) }
   }
   async function adjustStock(item:any) {
     const delta = prompt(`Adjust stock for "${item.name}" (current: ${item.quantity_on_hand})\nEnter +/- amount:`)
@@ -296,13 +362,14 @@ export default function InventoryPage() {
       const qtys: Record<string,string> = {}
       for (const l of res.data.data.lines) qtys[l.id] = String(l.received_qty || l.requested_qty)
       setReceiveQtys(qtys)
+      setReceiveExpiries({})
     }
   }
   async function receivePOLine(lineId: string) {
     const qty = parseFloat(receiveQtys[lineId])
     if (isNaN(qty) || qty < 0) return toast.error('Invalid quantity')
-    await inventoryApi.receiveLine(lineId, { received_qty: qty }).catch(()=>null)
-    toast.success('Stock updated')
+    await inventoryApi.receiveLine(lineId, { received_qty: qty, expiry_date: receiveExpiries[lineId]||undefined }).catch(()=>null)
+    toast.success('Stock updated' + (receiveExpiries[lineId] ? ' · batch recorded with expiry' : ' · batch recorded'))
     openPO(activePO.id); load()
   }
 
@@ -396,14 +463,21 @@ export default function InventoryPage() {
                             : <button onClick={()=>setSpoilItem(item)} title="Record spoilage" className="font-semibold hover:underline decoration-dotted">{item.quantity_on_hand} {item.unit_of_measure}</button>}
                         </td>
                         <td className="px-4 py-3">
-                          {item.is_assembled
-                            ? <span className="px-2 py-1 rounded-full text-xs font-medium bg-orange-100 text-orange-700">Assembled</span>
-                            : <span className={clsx('px-2 py-1 rounded-full text-xs font-medium', ss.cls)}>{ss.label}</span>}
+                          <div className="flex flex-col gap-1 items-start">
+                            {item.is_assembled
+                              ? <span className="px-2 py-1 rounded-full text-xs font-medium bg-orange-100 text-orange-700">{item.production_type==='staged'?'Staged':'One-step'}</span>
+                              : <span className={clsx('px-2 py-1 rounded-full text-xs font-medium', ss.cls)}>{ss.label}</span>}
+                            {item.is_assembled && item.production_type==='staged' && item.wip_quantity>0 &&
+                              <span className="text-xs text-blue-600">{item.wip_quantity} processing</span>}
+                          </div>
                         </td>
                         <td className="px-4 py-3">
                           <div className="flex items-center gap-1">
                             <button onClick={()=>openEditItem(item)} className="p-1.5 rounded hover:bg-slate-100 text-slate-400 hover:text-slate-700" title="Edit"><Edit2 className="w-4 h-4"/></button>
                             {canEdit && <button onClick={()=>openRecipe(item)} className="p-1.5 rounded hover:bg-orange-100 text-slate-400 hover:text-orange-600" title="Recipe / ingredients"><ChefHat className="w-4 h-4"/></button>}
+                            <button onClick={()=>openBatches(item)} className="p-1.5 rounded hover:bg-indigo-100 text-slate-400 hover:text-indigo-600" title="Batches &amp; expiry"><Layers className="w-4 h-4"/></button>
+                            {item.is_assembled && item.production_type==='staged' &&
+                              <button onClick={()=>openProcess(item)} className="p-1.5 rounded hover:bg-blue-100 text-slate-400 hover:text-blue-600" title="Process / complete production"><PlayCircle className="w-4 h-4"/></button>}
                           </div>
                         </td>
                       </tr>
@@ -455,7 +529,12 @@ export default function InventoryPage() {
                             : <button onClick={()=>setSpoilItem(item)} title="Record spoilage" className="font-semibold hover:underline decoration-dotted">{item.quantity_on_hand} {item.unit_of_measure}</button>}
                         </td>
                         <td className="px-4 py-3"><span className={clsx('px-2 py-1 rounded-full text-xs font-medium', ss.cls)}>{ss.label}</span></td>
-                        <td className="px-4 py-3">{canEdit && <button onClick={()=>openEditItem(item)} className="p-1.5 rounded hover:bg-slate-100 text-slate-400 hover:text-slate-700"><Edit2 className="w-4 h-4"/></button>}</td>
+                        <td className="px-4 py-3">
+                          <div className="flex items-center gap-1">
+                            {canEdit && <button onClick={()=>openEditItem(item)} className="p-1.5 rounded hover:bg-slate-100 text-slate-400 hover:text-slate-700" title="Edit"><Edit2 className="w-4 h-4"/></button>}
+                            <button onClick={()=>openBatches(item)} className="p-1.5 rounded hover:bg-indigo-100 text-slate-400 hover:text-indigo-600" title="Batches &amp; expiry"><Layers className="w-4 h-4"/></button>
+                          </div>
+                        </td>
                       </tr>
                     )})}
                     {ingredientsFiltered.length===0 && <tr><td colSpan={canEdit?8:7} className="px-4 py-12 text-center text-slate-400">No ingredients yet. Add raw kitchen stock here, then attach it to products via recipes.</td></tr>}
@@ -635,7 +714,7 @@ export default function InventoryPage() {
               <div className="card overflow-hidden">
                 <table className="w-full text-sm">
                   <thead><tr className="border-b border-slate-100 bg-slate-50">
-                    {['Item','SKU','Requested','Received Qty','Unit Cost','Status','Confirm'].map(h=>(<th key={h} className="text-left px-4 py-3 text-xs font-semibold text-slate-500 uppercase">{h}</th>))}
+                    {['Item','SKU','Requested','Received Qty','Batch Expiry','Unit Cost','Status','Confirm'].map(h=>(<th key={h} className="text-left px-4 py-3 text-xs font-semibold text-slate-500 uppercase">{h}</th>))}
                   </tr></thead>
                   <tbody className="divide-y divide-slate-50">
                     {activePO.lines.map((line:any)=>(
@@ -648,6 +727,14 @@ export default function InventoryPage() {
                             <input type="number" className="input py-1 w-24 text-sm"
                               value={receiveQtys[line.id] ?? ''}
                               onChange={e=>setReceiveQtys(p=>({...p,[line.id]:e.target.value}))} />
+                          )}
+                        </td>
+                        <td className="px-4 py-2.5">
+                          {!line.received_at && (
+                            <input type="date" className="input py-1 w-36 text-sm"
+                              value={receiveExpiries[line.id] ?? ''}
+                              onChange={e=>setReceiveExpiries(p=>({...p,[line.id]:e.target.value}))}
+                              title="Optional — can also be set later from the Inventory list"/>
                           )}
                         </td>
                         <td className="px-4 py-2.5 text-slate-500">{line.unit_cost!=null?`KES ${line.unit_cost.toLocaleString()}`:'—'}</td>
@@ -756,6 +843,16 @@ export default function InventoryPage() {
                 </select></div>
               <div><label className="label">Tags</label>
                 <input className="input" value={itemForm.tags} onChange={e=>setItemForm(p=>({...p,tags:e.target.value}))} placeholder="beer, cold"/></div>
+              {(((editItem as any)?.item_type ?? (itemForm as any).item_type ?? (tab==='ingredients'?'assembly':'product')) === 'product') && (
+                <div className="col-span-2">
+                  <label className="label">Kitchen Production Type</label>
+                  <select className="input" value={itemForm.production_type} onChange={e=>setItemForm(p=>({...p,production_type:e.target.value}))}>
+                    <option value="one_step">One-step — ingredients deduct directly when sold (e.g. Nyama Choma)</option>
+                    <option value="staged">Staged — has a "processing" stage before it's ready-to-eat (e.g. Samosa)</option>
+                  </select>
+                  <p className="text-xs text-slate-400 mt-1">Staged items need their processing tracked via the Process button in the item list, using the Recipe tab to set their raw ingredients.</p>
+                </div>
+              )}
               <div className="col-span-2"><label className="label">Image URL</label>
                 <input className="input" value={itemForm.image_url} onChange={e=>setItemForm(p=>({...p,image_url:e.target.value}))} placeholder="https://..."/></div>
             </div>
@@ -973,6 +1070,115 @@ export default function InventoryPage() {
             <div className="p-6 border-t border-slate-100 flex gap-3">
               <button className="btn-primary flex-1" onClick={createPO}>Create & Submit PO</button>
               <button className="btn-secondary" onClick={()=>setShowNewPO(false)}>Cancel</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Batch tracking modal */}
+      {batchesItem && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-2xl w-full max-w-lg max-h-[90vh] overflow-y-auto">
+            <div className="p-6 border-b border-slate-100 flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <Layers className="w-5 h-5 text-indigo-600" />
+                <h2 className="font-bold text-xl">Batches · {batchesItem.name}</h2>
+              </div>
+              <button onClick={()=>setBatchesItem(null)} className="p-1 rounded hover:bg-slate-100"><X className="w-5 h-5"/></button>
+            </div>
+            <div className="p-6 space-y-4">
+              {canEdit && (
+                <div className="flex items-end gap-2 bg-slate-50 rounded-xl p-3">
+                  <div className="flex-1">
+                    <label className="label">Quantity</label>
+                    <input type="number" className="input" value={newBatchQty} onChange={e=>setNewBatchQty(e.target.value)} min="0" step="any" placeholder="e.g. 20"/>
+                  </div>
+                  <div className="flex-1">
+                    <label className="label">Expiry date</label>
+                    <input type="date" className="input" value={newBatchExpiry} onChange={e=>setNewBatchExpiry(e.target.value)}/>
+                  </div>
+                  <button onClick={createBatch} className="btn-primary shrink-0">Add Batch</button>
+                </div>
+              )}
+              {batchesLoading ? <div className="flex justify-center py-8"><Spinner size="lg"/></div> : (
+                <div className="border border-slate-200 rounded-xl divide-y divide-slate-100 max-h-80 overflow-y-auto">
+                  {batches.map((b:any)=>{
+                    const isExpiring = !!b.expiry_date && new Date(b.expiry_date).getTime() <= Date.now()+7*86400000
+                    return (
+                      <div key={b.id} className="px-4 py-3 flex items-center gap-3">
+                        <div className="flex-1 min-w-0">
+                          <p className="font-mono text-xs font-semibold">{b.batch_number}</p>
+                          <p className="text-xs text-slate-400">{b.quantity} {batchesItem.unit_of_measure} · {b.source==='restock'?'From PO':b.source==='initial'?'Initial stock':'Manual'} · {b.received_at}</p>
+                        </div>
+                        {editingBatchId===b.id ? (
+                          <div className="flex items-center gap-1">
+                            <input type="date" className="input py-1 w-36 text-sm" value={editingBatchExpiry} onChange={e=>setEditingBatchExpiry(e.target.value)} autoFocus/>
+                            <button onClick={()=>saveBatchExpiry(b.id)} className="btn-primary py-1 px-2 text-xs">Save</button>
+                            <button onClick={()=>setEditingBatchId(null)} className="btn-secondary py-1 px-2 text-xs">Cancel</button>
+                          </div>
+                        ) : (
+                          <button onClick={()=>{ if(!canEdit) return; setEditingBatchId(b.id); setEditingBatchExpiry(b.expiry_date??'') }} disabled={!canEdit}
+                            className={clsx('text-xs font-medium px-2 py-1 rounded-lg', isExpiring?'bg-red-100 text-red-700':'bg-slate-100 text-slate-600', canEdit&&'hover:bg-slate-200 cursor-pointer')}>
+                            {b.expiry_date ? `Exp. ${b.expiry_date}` : 'Set expiry'}
+                          </button>
+                        )}
+                      </div>
+                    )
+                  })}
+                  {batches.length===0 && <p className="px-4 py-8 text-center text-slate-400 text-sm">No batches recorded yet</p>}
+                </div>
+              )}
+            </div>
+            <div className="p-6 border-t border-slate-100">
+              <button className="btn-secondary w-full" onClick={()=>setBatchesItem(null)}>Close</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Staged kitchen production modal */}
+      {processItem && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-2xl w-full max-w-md">
+            <div className="p-6 border-b border-slate-100 flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <PlayCircle className="w-5 h-5 text-blue-600" />
+                <h2 className="font-bold text-xl">Kitchen Production · {processItem.name}</h2>
+              </div>
+              <button onClick={()=>setProcessItem(null)} className="p-1 rounded hover:bg-slate-100"><X className="w-5 h-5"/></button>
+            </div>
+            <div className="p-6 space-y-5">
+              <div className="grid grid-cols-2 gap-3">
+                <div className="bg-blue-50 rounded-xl p-3 text-center">
+                  <p className="text-xs text-slate-500">Processing (WIP)</p>
+                  <p className="font-bold text-lg text-blue-700">{processItem.wip_quantity} {processItem.unit_of_measure}</p>
+                </div>
+                <div className="bg-emerald-50 rounded-xl p-3 text-center">
+                  <p className="text-xs text-slate-500">Ready to sell</p>
+                  <p className="font-bold text-lg text-emerald-700">{processItem.quantity_on_hand} {processItem.unit_of_measure}</p>
+                </div>
+              </div>
+
+              <div className="border border-slate-200 rounded-xl p-4">
+                <p className="font-medium text-sm mb-2 flex items-center gap-1.5"><PlayCircle className="w-4 h-4 text-blue-500"/> Start processing</p>
+                <div className="flex gap-2">
+                  <input type="number" className="input flex-1" value={processQty} onChange={e=>setProcessQty(e.target.value)} min="0" step="any" placeholder={`Qty of ${processItem.name} to start`}/>
+                  <button onClick={submitProcess} disabled={processBusy} className="btn-primary shrink-0 disabled:opacity-50">{processBusy?<Spinner size="sm"/>:'Start'}</button>
+                </div>
+                <p className="text-xs text-slate-400 mt-1.5">Deducts this recipe's raw ingredients now and moves the quantity into "processing".</p>
+              </div>
+
+              <div className="border border-slate-200 rounded-xl p-4">
+                <p className="font-medium text-sm mb-2 flex items-center gap-1.5"><CheckSquare className="w-4 h-4 text-emerald-500"/> Complete processing</p>
+                <div className="flex gap-2">
+                  <input type="number" className="input flex-1" value={completeQty} onChange={e=>setCompleteQty(e.target.value)} min="0" step="any" max={processItem.wip_quantity} placeholder={`Up to ${processItem.wip_quantity}`}/>
+                  <button onClick={submitCompleteProcessing} disabled={processBusy} className="btn-primary shrink-0 disabled:opacity-50">{processBusy?<Spinner size="sm"/>:'Complete'}</button>
+                </div>
+                <p className="text-xs text-slate-400 mt-1.5">Moves finished, ready-to-eat quantity out of "processing" and into sellable stock.</p>
+              </div>
+            </div>
+            <div className="p-6 border-t border-slate-100">
+              <button className="btn-secondary w-full" onClick={()=>setProcessItem(null)}>Close</button>
             </div>
           </div>
         </div>
