@@ -56,6 +56,29 @@ jobs:
             "src-tauri/binaries/smeazy-api-x86_64-pc-windows-msvc.exe" -Force
         shell: pwsh
 
+      # ── Fail fast with a clear message if the one-time signing setup was
+      # never completed, instead of letting tauri-action die deep into a
+      # 5-minute Rust build with a cryptic "failed to decode pubkey ...
+      # Invalid symbol 95, offset 7" error (95 = '_', which is exactly what
+      # the placeholder string below contains at that position).
+      - name: Verify updater signing key is configured
+        run: |
+          $pubkey = (Get-Content src-tauri/tauri.conf.json -Raw | ConvertFrom-Json).plugins.updater.pubkey
+          if ([string]::IsNullOrWhiteSpace($pubkey) -or $pubkey -eq "REPLACE_WITH_YOUR_PUBLIC_KEY_FROM_cargo_tauri_signer_generate") {
+            Write-Host "::error::src-tauri/tauri.conf.json still has the placeholder updater pubkey. Run 'cargo tauri signer generate -w ~/.tauri/smeazy-pos.key' locally, paste the printed public key into plugins.updater.pubkey in src-tauri/tauri.conf.json, commit it, and add the private key as the TAURI_SIGNING_PRIVATE_KEY (and, if you set one, TAURI_SIGNING_PRIVATE_KEY_PASSWORD) repo secret. See the README's 'One-time setup' section."
+            exit 1
+          }
+          if ($pubkey -notmatch '^[A-Za-z0-9+/=\s]+$') {
+            Write-Host "::error::src-tauri/tauri.conf.json's updater pubkey contains characters outside standard base64 (A-Z a-z 0-9 + / =) — it looks corrupted or was pasted incorrectly. Re-copy the exact public key printed by 'cargo tauri signer generate' with no extra characters."
+            exit 1
+          }
+          if ([string]::IsNullOrWhiteSpace("${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}")) {
+            Write-Host "::error::The TAURI_SIGNING_PRIVATE_KEY repo secret is not set. Add it under Settings -> Secrets and variables -> Actions using the private key file 'cargo tauri signer generate' wrote locally. See the README's 'One-time setup' section."
+            exit 1
+          }
+          Write-Host "Updater pubkey and signing secret look present — proceeding."
+        shell: pwsh
+
       # ── Build, sign, and publish via the official Tauri action ────────────
       # Signs the installer + generates latest.json automatically when the
       # TAURI_SIGNING_PRIVATE_KEY secret is present (see README for setup).

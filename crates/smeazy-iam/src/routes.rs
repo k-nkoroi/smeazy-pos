@@ -1,4 +1,4 @@
-use axum::{middleware, routing::{get, post, put}, Router};
+use axum::{middleware, routing::{delete, get, post, put}, Router};
 use smeazy_common::middleware::{require_auth, AuthState};
 use super::{handlers::*, service::IamService};
 use std::sync::Arc;
@@ -23,6 +23,8 @@ pub fn iam_routes(svc: Arc<IamService>, auth: AuthState) -> Router {
         .route("/audit-logs",           get(list_audit))
         .route("/settings",             get(get_settings).put(update_settings))
         .route("/payment-config",       get(payment_config))
+        .route("/settings/receipt-templates",     get(list_receipt_templates).post(create_receipt_template))
+        .route("/settings/receipt-templates/:id", put(update_receipt_template).delete(delete_receipt_template))
         .route_layer(middleware::from_fn_with_state(auth, require_auth))
         .with_state(svc);
     Router::new().merge(public).merge(protected)

@@ -40,6 +40,13 @@ export const authApi = {
   updateBusiness:  (d: any) => api.put('/auth/business', d),
 }
 
+export const receiptTemplatesApi = {
+  list:   (type?: 'receipt'|'order_note') => api.get('/settings/receipt-templates', { params: { type } }),
+  create: (d: any)                        => api.post('/settings/receipt-templates', d),
+  update: (id: string, d: any)            => api.put(`/settings/receipt-templates/${id}`, d),
+  remove: (id: string)                    => api.delete(`/settings/receipt-templates/${id}`),
+}
+
 export const tablesApi = {
   list:     ()       => api.get('/tables'),
   create:   (d: any) => api.post('/tables', d),

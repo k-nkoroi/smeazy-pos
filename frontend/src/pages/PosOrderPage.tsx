@@ -1,17 +1,31 @@
 import { useEffect, useState, useCallback } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
-import { ArrowLeft, Search, Trash2, ChefHat, CreditCard, CheckCircle, Truck, Users, UserPlus, Printer, Minus, Plus as PlusIcon } from 'lucide-react'
+import { ArrowLeft, Search, Trash2, ChefHat, CreditCard, CheckCircle, Truck, Users, UserPlus, Printer, Minus, Plus as PlusIcon, ClipboardList } from 'lucide-react'
 import toast from 'react-hot-toast'
 import clsx from 'clsx'
-import { posApi, inventoryApi, authApi, customersApi } from '../lib/api'
+import { posApi, inventoryApi, authApi, customersApi, receiptTemplatesApi } from '../lib/api'
 import { useAuthStore, useDeviceStore } from '../hooks/useAuth'
 import { Spinner } from '../components/shared/Spinner'
 
-interface OrderItem { id:string;name:string;quantity:number;unit_price:number;discount:number;status:string;item_id?:string }
+interface OrderItem {
+  id:string; name:string; quantity:number; unit_price:number; discount:number; status:string; item_id?:string
+  added_at?:string; dispatched_at?:string|null; sku?:string; notes?:string
+}
 interface PaymentLine { method:string;amount:string;confirmed:boolean;reference:string }
 
 const STATUS_STYLE: Record<string,string> = { new:'border-l-4 border-amber-400', processing:'border-l-4 border-blue-400', dispatched:'border-l-4 border-emerald-400' }
 const METHOD_COLORS: Record<string,string> = { cash:'bg-emerald-600', mpesa:'bg-green-500', card:'bg-blue-600' }
+// Print-template formatting knobs, driven by the business's saved receipt/order-note template.
+const FONT_FAMILY_CLASS: Record<string,string> = { mono:'font-mono', sans:'font-sans', serif:'font-serif' }
+const FONT_WEIGHT_CLASS: Record<string,string> = { normal:'font-normal', medium:'font-medium', bold:'font-bold' }
+const FONT_SIZE_CLASS: Record<string,string> = { xs:'text-xs', sm:'text-sm', base:'text-base' }
+function templateClasses(tpl:any) {
+  return clsx(
+    FONT_FAMILY_CLASS[tpl?.font_family] ?? 'font-mono',
+    FONT_WEIGHT_CLASS[tpl?.font_weight] ?? 'font-normal',
+    FONT_SIZE_CLASS[tpl?.font_size] ?? 'text-sm',
+  )
+}
 
 export default function PosOrderPage() {
   const { orderId } = useParams<{ orderId: string }>()
@@ -43,6 +57,9 @@ export default function PosOrderPage() {
   const [editingQtyId, setEditingQtyId] = useState<string|null>(null)
   const [editingQtyValue, setEditingQtyValue] = useState('')
   const [directorRate, setDirectorRate] = useState<null|'directors_promo'|'directors_discount'>(null)
+  const [receiptTemplate, setReceiptTemplate] = useState<any|null>(null)
+  const [orderNoteTemplate, setOrderNoteTemplate] = useState<any|null>(null)
+  const [showOrderNote, setShowOrderNote] = useState(false)
   const user = useAuthStore(s => s.user)
   const vatRate = 0.16 // display rate; server is authoritative
   const [darajaEnabled, setDarajaEnabled] = useState(false)
@@ -61,6 +78,8 @@ export default function PosOrderPage() {
     inventoryApi.listItems(undefined,'product').then(r=>setProducts(r.data.data??[]))
     authApi.listStaffPos().then(r=>setStaffList(r.data.data??[])).catch(()=>{})
     authApi.paymentConfig().then(r=>{ const d=r.data.data; setDarajaEnabled(!!d.daraja_enabled); setDarajaShortcode(d.daraja_shortcode||'') }).catch(()=>{})
+    receiptTemplatesApi.list('receipt').then(r=>{ const list=r.data.data??[]; setReceiptTemplate(list.find((t:any)=>t.is_default) ?? list[0] ?? null) }).catch(()=>{})
+    receiptTemplatesApi.list('order_note').then(r=>{ const list=r.data.data??[]; setOrderNoteTemplate(list.find((t:any)=>t.is_default) ?? list[0] ?? null) }).catch(()=>{})
   }, [reload])
 
   const total = (order?.total_amount??0) - (order?.discount??0)
@@ -187,6 +206,10 @@ export default function PosOrderPage() {
           <span className="text-slate-400">|</span>
           <button onClick={()=>{setShowCustomerModal(true); setCustomerQuery(order.customer_name??''); setCustomerPhone(order.customer_phone??'')}} className="flex items-center gap-1.5 text-slate-300 hover:text-white hover:bg-slate-700 px-2 py-1 rounded-lg transition-colors">
             <UserPlus className="w-3.5 h-3.5 text-slate-400"/><span>{order.customer_name??'Add customer'}</span>
+          </button>
+          <span className="text-slate-400">|</span>
+          <button onClick={()=>setShowOrderNote(true)} className="flex items-center gap-1.5 text-slate-300 hover:text-white hover:bg-slate-700 px-2 py-1 rounded-lg transition-colors" title="Print an internal kitchen/floor tracking ticket">
+            <ClipboardList className="w-3.5 h-3.5 text-slate-400"/><span>Order Note</span>
           </button>
         </div>
         <div className="flex gap-2 shrink-0">
@@ -501,12 +524,13 @@ export default function PosOrderPage() {
         <div className="fixed inset-0 bg-black bg-opacity-80 flex items-center justify-center z-50 print:bg-white print:relative print:inset-auto">
           <div className="bg-white rounded-2xl w-80 max-h-[92vh] overflow-y-auto print:rounded-none print:w-full print:max-h-none print:shadow-none" id="receipt">
             <div className="p-6 text-center border-b border-dashed border-slate-300">
-              {business?.logo_url && <img src={business.logo_url} alt="" className="w-16 h-16 object-contain mx-auto mb-2"/>}
+              {(receiptTemplate?.show_logo ?? true) && business?.logo_url && <img src={business.logo_url} alt="" className="w-16 h-16 object-contain mx-auto mb-2"/>}
               <h2 className="font-black text-lg">{business?.name ?? 'SMEazy POS'}</h2>
+              {receiptTemplate?.header_text && <p className="text-xs text-slate-500 mt-1 whitespace-pre-wrap">{receiptTemplate.header_text}</p>}
               <p className="text-xs text-slate-500 mt-1">{receipt.paid_at.toLocaleString('en-KE')}</p>
               <p className="text-xs text-slate-500">{receipt.table_name ?? 'Takeaway'}{receipt.waitstaff_name ? ` · Served by ${receipt.waitstaff_name}` : ''}</p>
             </div>
-            <div className="p-6 space-y-1.5 border-b border-dashed border-slate-300 font-mono text-sm">
+            <div className={clsx('p-6 space-y-1.5 border-b border-dashed border-slate-300', templateClasses(receiptTemplate))}>
               {receipt.items.map((it:any)=>(
                 <div key={it.id} className="flex justify-between gap-2">
                   <span className="truncate">{it.quantity}× {it.name}</span>
@@ -514,7 +538,7 @@ export default function PosOrderPage() {
                 </div>
               ))}
             </div>
-            <div className="p-6 space-y-1.5 font-mono text-sm border-b border-dashed border-slate-300">
+            <div className={clsx('p-6 space-y-1.5 border-b border-dashed border-slate-300', templateClasses(receiptTemplate))}>
               {receipt.directorRate && (
                 <div className="flex justify-between text-purple-700 font-semibold">
                   <span>{receipt.directorRate==='directors_promo'?"DIRECTOR'S PROMO":"DIRECTOR'S RATE"}</span>
@@ -532,11 +556,44 @@ export default function PosOrderPage() {
                 <div className="flex justify-between font-bold text-amber-700"><span>ON TAB · {receipt.customer_name}</span><span>KES {receipt.balance_due.toFixed(2)}</span></div>
               )}
             </div>
-            <div className="px-6 pb-2 text-center text-[10px] text-slate-400 font-mono">Price inclusive of 16% VAT</div>
-            <div className="p-4 text-center text-xs text-slate-400">Thank you! Powered by SMEazy POS</div>
+            {(receiptTemplate?.show_vat_note ?? true) && <div className="px-6 pb-2 text-center text-[10px] text-slate-400 font-mono">Price inclusive of 16% VAT</div>}
+            <div className="p-4 text-center text-xs text-slate-400 whitespace-pre-wrap">{receiptTemplate?.footer_text || 'Thank you! Powered by SMEazy POS'}</div>
             <div className="p-4 flex gap-2 print:hidden">
               <button onClick={()=>window.print()} className="btn-secondary flex-1 flex items-center justify-center gap-2"><Printer className="w-4 h-4"/>Print</button>
               <button onClick={()=>navigate('/floor')} className="btn-primary flex-1">Done</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ═══ ORDER NOTE — small internal kitchen/floor ticket, printable anytime before checkout ═══ */}
+      {showOrderNote && (
+        <div className="fixed inset-0 bg-black bg-opacity-80 flex items-center justify-center z-50 print:bg-white print:relative print:inset-auto">
+          <div className="bg-white rounded-2xl w-72 max-h-[92vh] overflow-y-auto print:rounded-none print:w-full print:max-h-none print:shadow-none" id="order-note">
+            <div className={clsx('p-4 text-center border-b border-dashed border-slate-300', templateClasses(orderNoteTemplate))}>
+              {(orderNoteTemplate?.show_logo ?? false) && business?.logo_url && <img src={business.logo_url} alt="" className="w-10 h-10 object-contain mx-auto mb-1.5"/>}
+              <p className="uppercase tracking-wide text-[10px] text-slate-400 font-sans">{orderNoteTemplate?.header_text || 'Internal — Not a Receipt'}</p>
+              <h2 className="font-black">Order #{(order.id??'').slice(-6).toUpperCase()}</h2>
+              <p className="text-slate-500 mt-0.5">{order.table_name ?? 'Takeaway'}{order.waitstaff_name ? ` · ${order.waitstaff_name}` : ''}</p>
+              <p className="text-slate-400">{new Date(order.opened_at).toLocaleString('en-KE')}</p>
+            </div>
+            <div className={clsx('p-4 space-y-1.5', templateClasses(orderNoteTemplate))}>
+              {items.map(item=>(
+                <div key={item.id} className={clsx('flex justify-between gap-2', item.status==='dispatched' && 'line-through text-slate-400')}>
+                  <span className="truncate">
+                    {item.quantity}× {item.name}
+                    {item.status==='new' && <span className="ml-1 text-amber-600 font-bold">●NEW</span>}
+                  </span>
+                  <span className="shrink-0 text-slate-400">{item.added_at ? new Date(item.added_at).toLocaleTimeString('en-KE',{hour:'2-digit',minute:'2-digit'}) : ''}</span>
+                </div>
+              ))}
+              {items.length===0 && <p className="text-slate-400 text-center py-2">No items on this order yet</p>}
+            </div>
+            <div className="px-4 pb-2 text-[10px] text-slate-400 font-sans">● NEW = not yet sent to kitchen · strikethrough = dispatched</div>
+            <div className="p-3 text-center text-[10px] text-slate-400 font-sans whitespace-pre-wrap">{orderNoteTemplate?.footer_text || 'Kitchen / floor control copy'}</div>
+            <div className="p-4 flex gap-2 print:hidden">
+              <button onClick={()=>window.print()} className="btn-secondary flex-1 flex items-center justify-center gap-2"><Printer className="w-4 h-4"/>Print</button>
+              <button onClick={()=>setShowOrderNote(false)} className="btn-primary flex-1">Close</button>
             </div>
           </div>
         </div>

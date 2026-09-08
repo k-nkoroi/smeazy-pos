@@ -1,6 +1,6 @@
 [package]
 name = "smeazy-pos-app"
-version = "2.6.0"
+version = "2.6.1"
 edition = "2021"
 description = "SMEazy POS — Offline-first hospitality point of sale"
 

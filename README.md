@@ -2,6 +2,14 @@
 
 A modular, production-grade point-of-sale platform built for hospitality businesses (bars, restaurants, pools, accommodation). **Fully offline-first**: the Rust binary embeds SQLite and auto-creates the database on first run — no Docker, no PostgreSQL, no network required. Ships as a native Windows desktop app via Tauri 2, or run the API + web frontend separately for development.
 
+## What's new in 2.6.1
+
+**Customizable receipt templates.** Settings → **Receipt Templates** lets you save named print templates — font (monospace/sans/serif), weight, size, and custom header/footer text — and mark one as the default per type. The checkout receipt now prints using your saved default template instead of a fixed layout.
+
+**Order Note.** A new small, minimal internal ticket, separate from the customer receipt and carrying no prices. Print it from the **Order Note** button in an open order's header, any time before checkout, as many times as needed. It shows the order's short reference, table, time, and assigned waitstaff, then every item currently on the order with its quantity and the time it was added — items not yet sent to the kitchen are flagged **●NEW**, and items already dispatched from the kitchen print with a strikethrough, so floor and kitchen staff can see at a glance what's outstanding. Order Notes get their own template (also editable in Settings → Receipt Templates) so they can be styled independently from the customer receipt.
+
+**CI fix.** The Windows build workflow now fails fast with a clear message if the Tauri updater's signing key was never configured, instead of a cryptic `failed to decode pubkey ... Invalid symbol 95, offset 7` deep into the build. If you're hitting that error: it means `src-tauri/tauri.conf.json`'s `plugins.updater.pubkey` still has its placeholder value — see **One-time setup** below.
+
 ## What's new in 2.6
 
 **Customer tabs / partial payments.** At checkout, a cashier or waiter can attach a customer to an order by typing a name into a live search box — matching existing customers are suggested as they type (with their outstanding balance shown), or a new customer is created automatically if no match exists. With a customer attached, an order can be checked out with a partial payment, opening a **tab**: goods are served and inventory is still deducted, but the unpaid balance is tracked against that customer. A new **Customers** page lists every customer, their open tabs, and total balance due, and lets staff settle a tab (in full or in part) from the customer's order history.
@@ -55,8 +63,9 @@ This prints a **public key** and writes a **private key** file (optionally passw
 
 **2. Put the public key in the app config.** Open `src-tauri/tauri.conf.json` and replace the placeholder:
 ```json
-"plugins": { "updater": { "pubkey": "PASTE_YOUR_PUBLIC_KEY_HERE" } }
+"plugins": { "updater": { "pubkey": "REPLACE_WITH_YOUR_PUBLIC_KEY_FROM_cargo_tauri_signer_generate" } }
 ```
+> **Skipping this step is the #1 cause of a failed build.** If CI fails with `failed to decode pubkey ... Invalid symbol 95, offset 7`, this is why — `_` (ASCII 95) only ever shows up here because the placeholder string was never replaced. The build workflow now checks for this and fails fast with a clear message instead of that cryptic error, but the fix is the same either way: paste your real public key here.
 
 **3. Add the private key to GitHub secrets.** Repo → **Settings → Secrets and variables → Actions** → add:
 - `TAURI_SIGNING_PRIVATE_KEY` — the full contents of the private key file
@@ -68,8 +77,8 @@ This prints a **public key** and writes a **private key** file (optionally passw
 
 ### Build a versioned release
 ```bash
-git tag v2.6.0
-git push origin v2.6.0
+git tag v2.6.1
+git push origin v2.6.1
 ```
 The workflow builds, signs, and publishes a GitHub Release with the installer and `latest.json` attached — nothing further to do. Existing installs of the app will find this via **Settings → Check for Updates**.
 

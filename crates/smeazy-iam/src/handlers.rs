@@ -121,3 +121,32 @@ pub async fn update_settings(State(s): State<IamState>, Extension(ctx): Extensio
     smeazy_common::audit::audit(&s.db, smeazy_common::audit::AuditEntry::new(&bid, "settings.update", "settings", "Updated business settings").actor(ctx.user_id.to_string()).meta(&req.settings)).await;
     Ok(ApiResponse::ok(s.get_settings(&bid).await?))
 }
+
+// ── Receipt templates (customizable receipt / Order Note printing) ──────────
+#[derive(serde::Deserialize)]
+pub struct ReceiptTemplateQuery { pub r#type: Option<String> }
+pub async fn list_receipt_templates(State(s): State<IamState>, Extension(ctx): Extension<TenantContext>, axum::extract::Query(q): axum::extract::Query<ReceiptTemplateQuery>) -> Result<(StatusCode, Json<ApiResponse<Vec<ReceiptTemplate>>>), ApiError> {
+    let bid = ctx.business_id.ok_or_else(|| ApiError::forbidden("No business context"))?.to_string();
+    Ok(ApiResponse::ok(s.list_receipt_templates(&bid, q.r#type.as_deref()).await?))
+}
+pub async fn create_receipt_template(State(s): State<IamState>, Extension(ctx): Extension<TenantContext>, Json(req): Json<CreateReceiptTemplateReq>) -> Result<(StatusCode, Json<ApiResponse<ReceiptTemplate>>), ApiError> {
+    if !smeazy_common::roles::is_manager_or_admin(&ctx) { return Err(ApiError::forbidden("Only admins and managers can manage receipt templates")); }
+    let bid = ctx.business_id.ok_or_else(|| ApiError::forbidden("No business context"))?.to_string();
+    let tpl = s.create_receipt_template(&bid, req).await?;
+    smeazy_common::audit::audit(&s.db, smeazy_common::audit::AuditEntry::new(&bid, "settings.receipt_template_create", "receipt_template", format!("Created {} template '{}'", tpl.template_type, tpl.name)).actor(ctx.user_id.to_string()).entity(&tpl.id, tpl.name.clone())).await;
+    Ok(ApiResponse::created(tpl))
+}
+pub async fn update_receipt_template(State(s): State<IamState>, Extension(ctx): Extension<TenantContext>, Path(id): Path<String>, Json(req): Json<UpdateReceiptTemplateReq>) -> Result<(StatusCode, Json<ApiResponse<ReceiptTemplate>>), ApiError> {
+    if !smeazy_common::roles::is_manager_or_admin(&ctx) { return Err(ApiError::forbidden("Only admins and managers can manage receipt templates")); }
+    let bid = ctx.business_id.ok_or_else(|| ApiError::forbidden("No business context"))?.to_string();
+    let tpl = s.update_receipt_template(&id, &bid, req).await?;
+    smeazy_common::audit::audit(&s.db, smeazy_common::audit::AuditEntry::new(&bid, "settings.receipt_template_update", "receipt_template", format!("Updated template '{}'", tpl.name)).actor(ctx.user_id.to_string()).entity(&tpl.id, tpl.name.clone())).await;
+    Ok(ApiResponse::ok(tpl))
+}
+pub async fn delete_receipt_template(State(s): State<IamState>, Extension(ctx): Extension<TenantContext>, Path(id): Path<String>) -> Result<(StatusCode, Json<ApiResponse<serde_json::Value>>), ApiError> {
+    if !smeazy_common::roles::is_manager_or_admin(&ctx) { return Err(ApiError::forbidden("Only admins and managers can manage receipt templates")); }
+    let bid = ctx.business_id.ok_or_else(|| ApiError::forbidden("No business context"))?.to_string();
+    let tpl = s.delete_receipt_template(&id, &bid).await?;
+    smeazy_common::audit::audit(&s.db, smeazy_common::audit::AuditEntry::new(&bid, "settings.receipt_template_delete", "receipt_template", format!("Deleted template '{}'", tpl.name)).actor(ctx.user_id.to_string()).entity(&tpl.id, tpl.name.clone())).await;
+    Ok(ApiResponse::ok(serde_json::json!({ "deleted": true })))
+}

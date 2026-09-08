@@ -152,3 +152,51 @@ pub struct AuditLogRow {
     pub summary: String, pub metadata: Option<String>,
     pub created_at: String,
 }
+
+// ── Receipt templates (customizable receipt / Order Note printing) ──────────
+#[derive(Debug, Clone, Serialize, sqlx::FromRow)]
+pub struct ReceiptTemplate {
+    pub id: String, pub business_id: String, pub name: String,
+    /// 'receipt' | 'order_note'
+    pub template_type: String,
+    pub is_default: i64,
+    /// 'mono' | 'sans' | 'serif'
+    pub font_family: String,
+    /// 'normal' | 'medium' | 'bold'
+    pub font_weight: String,
+    /// 'xs' | 'sm' | 'base'
+    pub font_size: String,
+    pub header_text: Option<String>,
+    pub footer_text: Option<String>,
+    pub show_logo: i64,
+    pub show_vat_note: i64,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CreateReceiptTemplateReq {
+    pub name: String,
+    pub template_type: String,
+    pub font_family: Option<String>,
+    pub font_weight: Option<String>,
+    pub font_size: Option<String>,
+    pub header_text: Option<String>,
+    pub footer_text: Option<String>,
+    pub show_logo: Option<bool>,
+    pub show_vat_note: Option<bool>,
+    pub is_default: Option<bool>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct UpdateReceiptTemplateReq {
+    pub name: Option<String>,
+    pub font_family: Option<String>,
+    pub font_weight: Option<String>,
+    pub font_size: Option<String>,
+    pub header_text: Option<String>,
+    pub footer_text: Option<String>,
+    pub show_logo: Option<bool>,
+    pub show_vat_note: Option<bool>,
+    pub is_default: Option<bool>,
+}

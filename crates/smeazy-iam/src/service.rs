@@ -103,6 +103,7 @@ impl IamService {
             let _ = sqlx::query("INSERT OR IGNORE INTO business_settings (business_id,key,value) VALUES (?,?,?)")
                 .bind(&biz_id).bind(k).bind(v).execute(&self.db).await;
         }
+        self.seed_default_receipt_templates(&biz_id).await;
 
         let token = self.issue_jwt(&user_id, &tenant_id, Some(&biz_id), "entrepreneur")?;
         Ok(AuthResponse {
@@ -494,5 +495,125 @@ impl IamService {
             "vat_rate": settings.get("vat_rate").and_then(|v| v.parse::<f64>().ok()).unwrap_or(16.0),
             "vat_inclusive": settings.get("vat_inclusive").map(|v| v == "true").unwrap_or(true),
         }))
+    }
+
+    // ── Receipt templates ───────────────────────────────────────────────────
+    /// Seeded once at signup so a fresh business always has a working default
+    /// of each type — matches the receipt's previous hardcoded look exactly,
+    /// so existing behaviour is unchanged until someone edits a template.
+    async fn seed_default_receipt_templates(&self, business_id: &str) {
+        let receipt_id = Uuid::new_v4().to_string();
+        let _ = sqlx::query("INSERT INTO receipt_templates (id,business_id,name,template_type,is_default,font_family,font_weight,font_size,footer_text,show_logo,show_vat_note) VALUES (?,?,?,'receipt',1,?,?,?,?,1,1)")
+            .bind(&receipt_id).bind(business_id).bind("Default Receipt")
+            .bind("mono").bind("normal").bind("sm")
+            .bind("Thank you! Powered by SMEazy POS")
+            .execute(&self.db).await;
+        let note_id = Uuid::new_v4().to_string();
+        let _ = sqlx::query("INSERT INTO receipt_templates (id,business_id,name,template_type,is_default,font_family,font_weight,font_size,header_text,footer_text,show_logo,show_vat_note) VALUES (?,?,?,'order_note',1,?,?,?,?,?,0,0)")
+            .bind(&note_id).bind(business_id).bind("Order Note")
+            .bind("mono").bind("bold").bind("xs")
+            .bind("INTERNAL — NOT A RECEIPT")
+            .bind("Kitchen / floor control copy")
+            .execute(&self.db).await;
+    }
+
+    pub async fn list_receipt_templates(&self, business_id: &str, template_type: Option<&str>) -> Result<Vec<ReceiptTemplate>, ApiError> {
+        sqlx::query_as::<_, ReceiptTemplate>(
+            "SELECT * FROM receipt_templates WHERE business_id=? AND (? IS NULL OR template_type=?) ORDER BY template_type, is_default DESC, name")
+            .bind(business_id).bind(template_type).bind(template_type)
+            .fetch_all(&self.db).await.map_err(ApiError::from)
+    }
+
+    async fn unset_other_default_templates(&self, business_id: &str, template_type: &str, except_id: &str) -> Result<(), ApiError> {
+        sqlx::query("UPDATE receipt_templates SET is_default=0, updated_at=datetime('now') WHERE business_id=? AND template_type=? AND id<>?")
+            .bind(business_id).bind(template_type).bind(except_id)
+            .execute(&self.db).await.map_err(ApiError::from)?;
+        Ok(())
+    }
+
+    /// Service methods take plain ids (not the whole TenantContext) — matching
+    /// this crate's existing convention (see update_business/update_staff
+    /// above); the audit call is made by the handler, which already holds ctx.
+    pub async fn create_receipt_template(&self, business_id: &str, req: CreateReceiptTemplateReq) -> Result<ReceiptTemplate, ApiError> {
+        if req.name.trim().is_empty() { return Err(ApiError::bad_request("Template name is required")); }
+        let template_type = match req.template_type.as_str() {
+            "receipt" => "receipt", "order_note" => "order_note",
+            _ => return Err(ApiError::bad_request("template_type must be 'receipt' or 'order_note'")),
+        };
+        let id = Uuid::new_v4().to_string();
+
+        // The first template of a type is always its default, whatever was asked.
+        let existing_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM receipt_templates WHERE business_id=? AND template_type=?")
+            .bind(business_id).bind(template_type).fetch_one(&self.db).await.map_err(ApiError::from)?;
+        let make_default = existing_count == 0 || req.is_default.unwrap_or(false);
+
+        sqlx::query("INSERT INTO receipt_templates (id,business_id,name,template_type,is_default,font_family,font_weight,font_size,header_text,footer_text,show_logo,show_vat_note) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)")
+            .bind(&id).bind(business_id).bind(req.name.trim()).bind(template_type)
+            .bind(if make_default { 1i64 } else { 0i64 })
+            .bind(req.font_family.as_deref().unwrap_or("mono"))
+            .bind(req.font_weight.as_deref().unwrap_or("normal"))
+            .bind(req.font_size.as_deref().unwrap_or("sm"))
+            .bind(&req.header_text).bind(&req.footer_text)
+            .bind(if req.show_logo.unwrap_or(true) { 1i64 } else { 0i64 })
+            .bind(if req.show_vat_note.unwrap_or(true) { 1i64 } else { 0i64 })
+            .execute(&self.db).await.map_err(ApiError::from)?;
+        if make_default { self.unset_other_default_templates(business_id, template_type, &id).await?; }
+
+        sqlx::query_as::<_, ReceiptTemplate>("SELECT * FROM receipt_templates WHERE id=?")
+            .bind(&id).fetch_one(&self.db).await.map_err(ApiError::from)
+    }
+
+    pub async fn update_receipt_template(&self, id: &str, business_id: &str, req: UpdateReceiptTemplateReq) -> Result<ReceiptTemplate, ApiError> {
+        let existing = sqlx::query_as::<_, ReceiptTemplate>("SELECT * FROM receipt_templates WHERE id=? AND business_id=?")
+            .bind(id).bind(business_id).fetch_optional(&self.db).await.map_err(ApiError::from)?
+            .ok_or_else(|| ApiError::not_found("Template not found"))?;
+
+        sqlx::query("UPDATE receipt_templates SET name=COALESCE(?,name), font_family=COALESCE(?,font_family), font_weight=COALESCE(?,font_weight), font_size=COALESCE(?,font_size), header_text=COALESCE(?,header_text), footer_text=COALESCE(?,footer_text), show_logo=COALESCE(?,show_logo), show_vat_note=COALESCE(?,show_vat_note), updated_at=datetime('now') WHERE id=? AND business_id=?")
+            .bind(&req.name).bind(&req.font_family).bind(&req.font_weight).bind(&req.font_size)
+            .bind(&req.header_text).bind(&req.footer_text)
+            .bind(req.show_logo.map(|b| if b { 1i64 } else { 0i64 }))
+            .bind(req.show_vat_note.map(|b| if b { 1i64 } else { 0i64 }))
+            .bind(id).bind(business_id)
+            .execute(&self.db).await.map_err(ApiError::from)?;
+
+        if req.is_default == Some(true) {
+            sqlx::query("UPDATE receipt_templates SET is_default=1, updated_at=datetime('now') WHERE id=? AND business_id=?")
+                .bind(id).bind(business_id).execute(&self.db).await.map_err(ApiError::from)?;
+            self.unset_other_default_templates(business_id, &existing.template_type, id).await?;
+        }
+
+        sqlx::query_as::<_, ReceiptTemplate>("SELECT * FROM receipt_templates WHERE id=?")
+            .bind(id).fetch_one(&self.db).await.map_err(ApiError::from)
+    }
+
+    /// Deletes the template and returns it (so the handler can audit its
+    /// name). Refuses to delete the last template of a type, and promotes
+    /// the oldest remaining sibling to default if the deleted one was it.
+    pub async fn delete_receipt_template(&self, id: &str, business_id: &str) -> Result<ReceiptTemplate, ApiError> {
+        let existing = sqlx::query_as::<_, ReceiptTemplate>("SELECT * FROM receipt_templates WHERE id=? AND business_id=?")
+            .bind(id).bind(business_id).fetch_optional(&self.db).await.map_err(ApiError::from)?
+            .ok_or_else(|| ApiError::not_found("Template not found"))?;
+
+        let sibling_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM receipt_templates WHERE business_id=? AND template_type=?")
+            .bind(business_id).bind(&existing.template_type).fetch_one(&self.db).await.map_err(ApiError::from)?;
+        if sibling_count <= 1 {
+            return Err(ApiError::bad_request("Can't delete the only template of this type — add another one first"));
+        }
+
+        sqlx::query("DELETE FROM receipt_templates WHERE id=? AND business_id=?")
+            .bind(id).bind(business_id).execute(&self.db).await.map_err(ApiError::from)?;
+
+        if existing.is_default != 0 {
+            // Promote the oldest remaining template of this type to default so
+            // there's always exactly one to print with.
+            let promote: Option<String> = sqlx::query_scalar("SELECT id FROM receipt_templates WHERE business_id=? AND template_type=? ORDER BY created_at LIMIT 1")
+                .bind(business_id).bind(&existing.template_type).fetch_optional(&self.db).await.map_err(ApiError::from)?;
+            if let Some(pid) = promote {
+                sqlx::query("UPDATE receipt_templates SET is_default=1, updated_at=datetime('now') WHERE id=?")
+                    .bind(&pid).execute(&self.db).await.map_err(ApiError::from)?;
+            }
+        }
+
+        Ok(existing)
     }
 }
