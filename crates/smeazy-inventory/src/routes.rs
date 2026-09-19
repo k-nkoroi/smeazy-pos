@@ -9,6 +9,7 @@ pub fn inventory_routes(svc: Arc<InventoryService>, auth: AuthState) -> Router {
         .route("/inventory/categories/:id",            put(update_category))
         .route("/inventory/items",                     get(list_items).post(create_item))
         .route("/inventory/items/:id",                 put(update_item))
+        .route("/inventory/items/:id/price",           put(update_price))
         .route("/inventory/items/:id/adjust",          post(adjust_stock))
         .route("/inventory/items/:id/spoil",           post(record_spoil))
         .route("/inventory/items/:id/recipe",          get(get_recipe).put(set_recipe))

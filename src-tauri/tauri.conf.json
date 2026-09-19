@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "SMEazy POS",
-  "version": "2.6.1",
+  "version": "2.6.2",
   "identifier": "ke.co.cotr.smeazypos",
   "build": {
     "beforeDevCommand": "npm run dev --prefix ../frontend",
@@ -37,7 +37,7 @@
   },
   "plugins": {
     "updater": {
-      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDgzNkU3RjU4NUM5OUQ1MjIKUldRaTFabGNXSDl1ZzZjSnZ2V0c5enFhTE0xRkhHMlhkeDJiQTN3cmRGdmZzR2E2ZFFsUTFhWTcK",
+      "pubkey": "REPLACE_WITH_YOUR_PUBLIC_KEY_FROM_cargo_tauri_signer_generate",
       "endpoints": [
         "https://github.com/k-nkoroi/smeazy-pos/releases/latest/download/latest.json"
       ]

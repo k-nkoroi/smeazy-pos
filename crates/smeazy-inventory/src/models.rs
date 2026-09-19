@@ -52,6 +52,16 @@ pub struct UpdateItemReq {
     pub production_type: Option<String>,
 }
 
+/// Quick price change from the Inventory list. Kept separate from the full
+/// UpdateItemReq so that cashiers (storekeeper-tier) can adjust prices on the
+/// floor without being able to change every other field, and so the change is
+/// logged with its before/after values.
+#[derive(Debug, Deserialize)]
+pub struct UpdatePriceReq {
+    pub sale_price: Option<f64>,
+    pub cost_price: Option<f64>,
+}
+
 // ── Staged kitchen production ─────────────────────────────────────────────────
 #[derive(Debug, Deserialize)]
 pub struct ProcessBatchReq { pub quantity: f64 }

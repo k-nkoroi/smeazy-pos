@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
-import { ArrowLeft, Search, Trash2, ChefHat, CreditCard, CheckCircle, Truck, Users, UserPlus, Printer, Minus, Plus as PlusIcon, ClipboardList } from 'lucide-react'
+import { ArrowLeft, Search, Trash2, ChefHat, CreditCard, CheckCircle, Truck, Users, UserPlus, Printer, Minus, Plus as PlusIcon, ClipboardList, Percent } from 'lucide-react'
 import toast from 'react-hot-toast'
 import clsx from 'clsx'
 import { posApi, inventoryApi, authApi, customersApi, receiptTemplatesApi } from '../lib/api'
@@ -60,6 +60,11 @@ export default function PosOrderPage() {
   const [receiptTemplate, setReceiptTemplate] = useState<any|null>(null)
   const [orderNoteTemplate, setOrderNoteTemplate] = useState<any|null>(null)
   const [showOrderNote, setShowOrderNote] = useState(false)
+  // Per-item discount editor
+  const [discountItem, setDiscountItem] = useState<OrderItem|null>(null)
+  const [discountMode, setDiscountMode] = useState<'amount'|'percent'>('amount')
+  const [discountValue, setDiscountValue] = useState('')
+  const [savingDiscount, setSavingDiscount] = useState(false)
   const user = useAuthStore(s => s.user)
   const vatRate = 0.16 // display rate; server is authoritative
   const [darajaEnabled, setDarajaEnabled] = useState(false)
@@ -183,9 +188,49 @@ export default function PosOrderPage() {
         authorized_by: directorRate ? user?.id : undefined,
         allow_partial: canOpenTab ? true : undefined,
       })
-      setReceipt({ ...res.data.data, items:[...items], table_name:order.table_name, waitstaff_name:order.waitstaff_name, customer_name:order.customer_name, paid_at:new Date(), directorRate })
+      setReceipt({ ...res.data.data, items:[...items], table_name:order.table_name, waitstaff_name:order.waitstaff_name, customer_name:order.customer_name, paid_at:new Date(), directorRate,
+        total_discount: Math.max(0, items.reduce((s,it)=>s+it.unit_price*it.quantity,0) - (res.data.data.total ?? 0)) })
     } catch (err:any) { toast.error(err.response?.data?.error?.message??'Payment failed') }
     finally { setProcessingPayment(false) }
+  }
+
+  // ── Per-item discounts ────────────────────────────────────────────────────
+  function openDiscount(item:OrderItem) {
+    setDiscountItem(item); setDiscountMode('amount'); setDiscountValue(item.discount>0?String(item.discount):'')
+  }
+  async function saveItemDiscount(forceAmount?:number) {
+    if (!discountItem || !orderId) return
+    const line = discountItem.unit_price * discountItem.quantity
+    let amount: number
+    if (forceAmount != null) amount = forceAmount
+    else { const raw = parseFloat(discountValue)||0; amount = discountMode==='percent' ? Math.round(line*raw)/100 : raw }
+    if (amount < 0) return toast.error('Discount cannot be negative')
+    if (amount > line + 0.001) return toast.error('Discount is more than the line total')
+    setSavingDiscount(true)
+    try {
+      await posApi.setItemDiscount(orderId, discountItem.id, amount)
+      toast.success(amount>0 ? 'Discount applied' : 'Discount cleared')
+      setDiscountItem(null); reload()
+    } catch (e:any) { toast.error(e.response?.data?.error?.message ?? 'Failed to set discount') }
+    finally { setSavingDiscount(false) }
+  }
+
+  // ── Print a pre-payment "bill" (proforma) from the live order, so the
+  // customer can be handed the amount to pay before cash/M-Pesa is captured
+  // and the order completed. Reuses the receipt modal in preview mode. ───────
+  function openBill() {
+    if (!order || items.length===0) return toast.error('Add items to the order first')
+    const grossList = items.reduce((s,it)=>s + it.unit_price*it.quantity, 0)
+    const t = total // order.total_amount - order.discount (already net of item discounts)
+    setReceipt({
+      preview: true,
+      items: [...items],
+      total: t, net_amount: t*(1-vatRate), vat_amount: t*vatRate,
+      table_name: order.table_name, waitstaff_name: order.waitstaff_name, customer_name: order.customer_name,
+      payments: [], change_due: 0, balance_due: 0, status: 'unpaid',
+      total_discount: Math.max(0, grossList - t),
+      paid_at: new Date(),
+    })
   }
 
   if (loading) return <div className="min-h-screen bg-slate-900 flex items-center justify-center"><Spinner size="lg"/></div>
@@ -210,6 +255,10 @@ export default function PosOrderPage() {
           <span className="text-slate-400">|</span>
           <button onClick={()=>setShowOrderNote(true)} className="flex items-center gap-1.5 text-slate-300 hover:text-white hover:bg-slate-700 px-2 py-1 rounded-lg transition-colors" title="Print an internal kitchen/floor tracking ticket">
             <ClipboardList className="w-3.5 h-3.5 text-slate-400"/><span>Order Note</span>
+          </button>
+          <span className="text-slate-400">|</span>
+          <button onClick={openBill} className="flex items-center gap-1.5 text-slate-300 hover:text-white hover:bg-slate-700 px-2 py-1 rounded-lg transition-colors" title="Print a pre-payment bill for the customer (order stays open)">
+            <Printer className="w-3.5 h-3.5 text-slate-400"/><span>Print Bill</span>
           </button>
         </div>
         <div className="flex gap-2 shrink-0">
@@ -294,10 +343,14 @@ export default function PosOrderPage() {
                           </button>
                         </div>
                         <span className="text-slate-300 text-xs">KES {item.unit_price.toLocaleString()}</span>
-                        <span className="text-brand-400 text-xs font-bold ml-auto">KES {(item.quantity*item.unit_price).toLocaleString()}</span>
+                        <span className="ml-auto text-right">
+                          {item.discount>0 && <span className="block text-[10px] text-slate-500 line-through leading-none">KES {(item.quantity*item.unit_price).toLocaleString()}</span>}
+                          <span className="text-brand-400 text-xs font-bold">KES {(item.quantity*item.unit_price - item.discount).toLocaleString()}</span>
+                        </span>
                       </div>
                     </div>
                     <div className="flex flex-col gap-1 shrink-0">
+                      <button onClick={()=>openDiscount(item)} className={clsx('hover:text-amber-400', item.discount>0?'text-amber-400':'text-slate-500')} title={item.discount>0?`Discount: KES ${item.discount.toLocaleString()}`:'Discount this item'}><Percent className="w-3.5 h-3.5"/></button>
                       {item.status==='dispatched'?<CheckCircle className="w-4 h-4 text-emerald-400"/>:(
                         <button onClick={()=>updateItemStatus(item.id,'dispatched')} className="text-slate-500 hover:text-emerald-400" title="Mark dispatched"><Truck className="w-4 h-4"/></button>
                       )}
@@ -523,20 +576,34 @@ export default function PosOrderPage() {
       {receipt && (
         <div className="fixed inset-0 bg-black bg-opacity-80 flex items-center justify-center z-50 print:bg-white print:relative print:inset-auto">
           <div className="bg-white rounded-2xl w-80 max-h-[92vh] overflow-y-auto print:rounded-none print:w-full print:max-h-none print:shadow-none" id="receipt">
+            {receipt.preview && (
+              <div className="bg-amber-100 text-amber-900 text-center text-[11px] font-bold py-1.5 tracking-wide print:bg-white">PROFORMA · NOT A RECEIPT OF PAYMENT</div>
+            )}
             <div className="p-6 text-center border-b border-dashed border-slate-300">
               {(receiptTemplate?.show_logo ?? true) && business?.logo_url && <img src={business.logo_url} alt="" className="w-16 h-16 object-contain mx-auto mb-2"/>}
               <h2 className="font-black text-lg">{business?.name ?? 'SMEazy POS'}</h2>
-              {receiptTemplate?.header_text && <p className="text-xs text-slate-500 mt-1 whitespace-pre-wrap">{receiptTemplate.header_text}</p>}
-              <p className="text-xs text-slate-500 mt-1">{receipt.paid_at.toLocaleString('en-KE')}</p>
-              <p className="text-xs text-slate-500">{receipt.table_name ?? 'Takeaway'}{receipt.waitstaff_name ? ` · Served by ${receipt.waitstaff_name}` : ''}</p>
+              {receiptTemplate?.header_text && <p className="receipt-sub mt-1 whitespace-pre-wrap">{receiptTemplate.header_text}</p>}
+              <p className="receipt-sub mt-1">{receipt.paid_at.toLocaleString('en-KE')}</p>
+              <p className="receipt-sub">{receipt.table_name ?? 'Takeaway'}{receipt.waitstaff_name ? ` · Served by ${receipt.waitstaff_name}` : ''}</p>
             </div>
             <div className={clsx('p-6 space-y-1.5 border-b border-dashed border-slate-300', templateClasses(receiptTemplate))}>
-              {receipt.items.map((it:any)=>(
-                <div key={it.id} className="flex justify-between gap-2">
-                  <span className="truncate">{it.quantity}× {it.name}</span>
-                  <span className="shrink-0">{(it.quantity*it.unit_price).toLocaleString()}</span>
-                </div>
-              ))}
+              {receipt.items.map((it:any)=>{
+                const line = it.quantity*it.unit_price
+                return (
+                  <div key={it.id}>
+                    <div className="flex justify-between gap-2">
+                      <span className="truncate">{it.quantity}× {it.name}</span>
+                      <span className="shrink-0">{(line - (it.discount||0)).toLocaleString()}</span>
+                    </div>
+                    {it.discount>0 && (
+                      <div className="flex justify-between gap-2 receipt-sub">
+                        <span className="truncate pl-3">discount (was {line.toLocaleString()})</span>
+                        <span className="shrink-0">-{it.discount.toLocaleString()}</span>
+                      </div>
+                    )}
+                  </div>
+                )
+              })}
             </div>
             <div className={clsx('p-6 space-y-1.5 border-b border-dashed border-slate-300', templateClasses(receiptTemplate))}>
               {receipt.directorRate && (
@@ -545,22 +612,28 @@ export default function PosOrderPage() {
                   <span>{receipt.directorRate==='directors_promo'?'100% OFF':'AT COST'}</span>
                 </div>
               )}
-              <div className="flex justify-between text-slate-600"><span>Net (excl. VAT)</span><span>KES {(receipt.net_amount ?? (receipt.total*(1-vatRate))).toFixed(2)}</span></div>
-              <div className="flex justify-between text-slate-600"><span>VAT (16%)</span><span>KES {(receipt.vat_amount ?? (receipt.total*vatRate)).toFixed(2)}</span></div>
+              {receipt.total_discount>0.009 && (
+                <div className="flex justify-between font-semibold"><span>Total discount</span><span>- KES {Math.round(receipt.total_discount).toLocaleString()}</span></div>
+              )}
+              <div className="flex justify-between receipt-sub"><span>Net (excl. VAT)</span><span>KES {(receipt.net_amount ?? (receipt.total*(1-vatRate))).toFixed(2)}</span></div>
+              <div className="flex justify-between receipt-sub"><span>VAT (16%)</span><span>KES {(receipt.vat_amount ?? (receipt.total*vatRate)).toFixed(2)}</span></div>
               <div className="flex justify-between font-bold text-base pt-1 border-t border-slate-200"><span>TOTAL</span><span>KES {receipt.total.toLocaleString()}</span></div>
-              {receipt.payments.map((p:any)=>(
-                <div key={p.id} className="flex justify-between text-slate-500"><span className="uppercase">{p.method}{p.reference?` (${p.reference})`:''}</span><span>{p.amount.toLocaleString()}</span></div>
+              {!receipt.preview && receipt.payments.map((p:any)=>(
+                <div key={p.id} className="flex justify-between receipt-sub"><span className="uppercase">{p.method}{p.reference?` (${p.reference})`:''}</span><span>{p.amount.toLocaleString()}</span></div>
               ))}
-              {receipt.change_due>0.01&&<div className="flex justify-between font-bold"><span>CHANGE</span><span>KES {receipt.change_due.toFixed(2)}</span></div>}
-              {receipt.status==='tab'&&receipt.balance_due>0.01&&(
+              {!receipt.preview && receipt.change_due>0.01&&<div className="flex justify-between font-bold"><span>CHANGE</span><span>KES {receipt.change_due.toFixed(2)}</span></div>}
+              {!receipt.preview && receipt.status==='tab'&&receipt.balance_due>0.01&&(
                 <div className="flex justify-between font-bold text-amber-700"><span>ON TAB · {receipt.customer_name}</span><span>KES {receipt.balance_due.toFixed(2)}</span></div>
               )}
+              {receipt.preview && <div className="flex justify-between font-bold text-amber-700 pt-1"><span>AMOUNT DUE</span><span>KES {receipt.total.toLocaleString()}</span></div>}
             </div>
-            {(receiptTemplate?.show_vat_note ?? true) && <div className="px-6 pb-2 text-center text-[10px] text-slate-400 font-mono">Price inclusive of 16% VAT</div>}
-            <div className="p-4 text-center text-xs text-slate-400 whitespace-pre-wrap">{receiptTemplate?.footer_text || 'Thank you! Powered by SMEazy POS'}</div>
+            {(receiptTemplate?.show_vat_note ?? true) && <div className="px-6 pb-2 text-center receipt-sub font-mono">Price inclusive of 16% VAT</div>}
+            <div className="p-4 text-center receipt-sub whitespace-pre-wrap">{receipt.preview ? 'This is a bill, not proof of payment.' : (receiptTemplate?.footer_text || 'Thank you! Powered by SMEazy POS')}</div>
             <div className="p-4 flex gap-2 print:hidden">
               <button onClick={()=>window.print()} className="btn-secondary flex-1 flex items-center justify-center gap-2"><Printer className="w-4 h-4"/>Print</button>
-              <button onClick={()=>navigate('/floor')} className="btn-primary flex-1">Done</button>
+              {receipt.preview
+                ? <button onClick={()=>setReceipt(null)} className="btn-primary flex-1">Close</button>
+                : <button onClick={()=>navigate('/floor')} className="btn-primary flex-1">Done</button>}
             </div>
           </div>
         </div>
@@ -572,28 +645,54 @@ export default function PosOrderPage() {
           <div className="bg-white rounded-2xl w-72 max-h-[92vh] overflow-y-auto print:rounded-none print:w-full print:max-h-none print:shadow-none" id="order-note">
             <div className={clsx('p-4 text-center border-b border-dashed border-slate-300', templateClasses(orderNoteTemplate))}>
               {(orderNoteTemplate?.show_logo ?? false) && business?.logo_url && <img src={business.logo_url} alt="" className="w-10 h-10 object-contain mx-auto mb-1.5"/>}
-              <p className="uppercase tracking-wide text-[10px] text-slate-400 font-sans">{orderNoteTemplate?.header_text || 'Internal — Not a Receipt'}</p>
+              <p className="receipt-sub uppercase tracking-wide font-sans">{orderNoteTemplate?.header_text || 'Internal — Not a Receipt'}</p>
               <h2 className="font-black">Order #{(order.id??'').slice(-6).toUpperCase()}</h2>
-              <p className="text-slate-500 mt-0.5">{order.table_name ?? 'Takeaway'}{order.waitstaff_name ? ` · ${order.waitstaff_name}` : ''}</p>
-              <p className="text-slate-400">{new Date(order.opened_at).toLocaleString('en-KE')}</p>
+              <p className="receipt-sub mt-0.5">{order.table_name ?? 'Takeaway'}{order.waitstaff_name ? ` · ${order.waitstaff_name}` : ''}</p>
+              <p className="receipt-sub">{new Date(order.opened_at).toLocaleString('en-KE')}</p>
             </div>
             <div className={clsx('p-4 space-y-1.5', templateClasses(orderNoteTemplate))}>
               {items.map(item=>(
-                <div key={item.id} className={clsx('flex justify-between gap-2', item.status==='dispatched' && 'line-through text-slate-400')}>
+                <div key={item.id} className={clsx('flex justify-between gap-2', item.status==='dispatched' && 'line-through')}>
                   <span className="truncate">
                     {item.quantity}× {item.name}
                     {item.status==='new' && <span className="ml-1 text-amber-600 font-bold">●NEW</span>}
                   </span>
-                  <span className="shrink-0 text-slate-400">{item.added_at ? new Date(item.added_at).toLocaleTimeString('en-KE',{hour:'2-digit',minute:'2-digit'}) : ''}</span>
+                  <span className="shrink-0 receipt-sub">{item.added_at ? new Date(item.added_at).toLocaleTimeString('en-KE',{hour:'2-digit',minute:'2-digit'}) : ''}</span>
                 </div>
               ))}
-              {items.length===0 && <p className="text-slate-400 text-center py-2">No items on this order yet</p>}
+              {items.length===0 && <p className="receipt-sub text-center py-2">No items on this order yet</p>}
             </div>
-            <div className="px-4 pb-2 text-[10px] text-slate-400 font-sans">● NEW = not yet sent to kitchen · strikethrough = dispatched</div>
-            <div className="p-3 text-center text-[10px] text-slate-400 font-sans whitespace-pre-wrap">{orderNoteTemplate?.footer_text || 'Kitchen / floor control copy'}</div>
+            <div className="px-4 pb-2 receipt-sub font-sans">● NEW = not yet sent to kitchen · strikethrough = dispatched</div>
+            <div className="p-3 text-center receipt-sub font-sans whitespace-pre-wrap">{orderNoteTemplate?.footer_text || 'Kitchen / floor control copy'}</div>
             <div className="p-4 flex gap-2 print:hidden">
               <button onClick={()=>window.print()} className="btn-secondary flex-1 flex items-center justify-center gap-2"><Printer className="w-4 h-4"/>Print</button>
               <button onClick={()=>setShowOrderNote(false)} className="btn-primary flex-1">Close</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ═══ PER-ITEM DISCOUNT ═══ */}
+      {discountItem && (
+        <div className="fixed inset-0 bg-black bg-opacity-70 flex items-center justify-center z-50 print:hidden">
+          <div className="bg-slate-800 rounded-2xl p-6 w-80 border border-slate-600">
+            <h2 className="text-white font-bold text-lg mb-1 flex items-center gap-2"><Percent className="w-5 h-5"/>Item Discount</h2>
+            <p className="text-slate-400 text-xs mb-4">{discountItem.quantity}× {discountItem.name} · line KES {(discountItem.unit_price*discountItem.quantity).toLocaleString()}</p>
+            <div className="flex gap-2 mb-3">
+              <button onClick={()=>setDiscountMode('amount')} className={clsx('flex-1 py-2 rounded-lg text-sm font-medium', discountMode==='amount'?'bg-brand-600 text-white':'bg-slate-700 text-slate-300 hover:bg-slate-600')}>KES amount</button>
+              <button onClick={()=>setDiscountMode('percent')} className={clsx('flex-1 py-2 rounded-lg text-sm font-medium', discountMode==='percent'?'bg-brand-600 text-white':'bg-slate-700 text-slate-300 hover:bg-slate-600')}>Percent %</button>
+            </div>
+            <input autoFocus type="number" min="0" value={discountValue} onChange={e=>setDiscountValue(e.target.value)}
+              placeholder={discountMode==='percent'?'e.g. 10 (%)':'e.g. 50 (KES)'}
+              onKeyDown={e=>{ if(e.key==='Enter') saveItemDiscount() }}
+              className="w-full bg-slate-700 border border-slate-600 rounded-lg px-3 py-2.5 text-white text-sm mb-2 focus:outline-none focus:border-brand-500"/>
+            {!!discountValue && (
+              <p className="text-slate-400 text-xs mb-3">New line total: KES {Math.max(0,(discountItem.unit_price*discountItem.quantity) - (discountMode==='percent'? Math.round(discountItem.unit_price*discountItem.quantity*(parseFloat(discountValue)||0))/100 : (parseFloat(discountValue)||0))).toLocaleString()}</p>
+            )}
+            <div className="flex gap-2">
+              <button onClick={()=>saveItemDiscount()} disabled={savingDiscount} className="btn-primary flex-1">{savingDiscount?<Spinner size="sm"/>:'Apply'}</button>
+              {discountItem.discount>0 && <button onClick={()=>saveItemDiscount(0)} disabled={savingDiscount} className="btn-secondary">Clear</button>}
+              <button onClick={()=>setDiscountItem(null)} className="btn-secondary">Cancel</button>
             </div>
           </div>
         </div>

@@ -43,3 +43,25 @@
   40%, 80% { transform: translateX(8px); }
 }
 .animate-shake { animation: shake 0.4s ease-in-out; }
+
+/* ── Thermal-receipt legibility ──────────────────────────────────────────────
+   Thermal heads print each glyph as sparse dots, so faint grey text comes out
+   almost invisible. Secondary receipt lines therefore use a near-black colour
+   (not slate grey) and are only made *slightly smaller* than the main lines so
+   the visual hierarchy that the grey used to carry is preserved. Applied on
+   screen and in print so the preview matches the paper. */
+.receipt-sub { color: #0b0f19; font-size: 0.72rem; line-height: 1.05rem; }
+#receipt, #order-note { color: #0b0f19; }
+
+@media print {
+  @page { margin: 6mm; }
+  /* Force every glyph on the ticket to true black — colour hints (amber "NEW",
+     purple director lines, slate subtotals) are meaningless on a mono thermal
+     head and only ever print pale. The strikethrough + "NEW" text still carry
+     the meaning in black and white. */
+  #receipt, #receipt *, #order-note, #order-note * {
+    color: #000 !important;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+}

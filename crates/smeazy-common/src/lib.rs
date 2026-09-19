@@ -81,9 +81,13 @@ pub mod roles {
     pub fn is_admin(ctx: &TenantContext) -> bool {
         matches!(ctx.role, UserRoleType::Entrepreneur | UserRoleType::AdminStaff | UserRoleType::Solopreneur)
     }
-    /// Admin OR executive/manager — can edit inventory, view staff analytics.
+    /// Admin OR executive/manager OR cashier — can edit inventory, change
+    /// settings, view logs and staff analytics. Cashiers were granted this
+    /// manager-level tier in 2.6.2 so they have full access to every dashboard
+    /// operation (per operator request); Waitstaff/storekeeper/contractor stay
+    /// scoped by their own capabilities.
     pub fn is_manager_or_admin(ctx: &TenantContext) -> bool {
-        is_admin(ctx) || matches!(ctx.role, UserRoleType::ExecutiveStaff)
+        is_admin(ctx) || matches!(ctx.role, UserRoleType::ExecutiveStaff | UserRoleType::Cashier)
     }
     /// Storekeeper and every role senior to it (cashier, executive, admin, owner) —
     /// excludes Waitstaff (operational_staff) and contractors. Used for actions like

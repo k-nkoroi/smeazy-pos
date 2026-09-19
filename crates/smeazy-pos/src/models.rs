@@ -145,6 +145,11 @@ pub struct PayTabReq { pub payments: Vec<ConfirmPaymentReq> }
 
 #[derive(Debug, Deserialize)]
 pub struct ApplyDiscountReq { pub discount: f64 }
+/// Per-line-item discount, as an absolute KES amount off that line's list total
+/// (unit_price × quantity). The frontend converts a percentage into an amount
+/// before sending. Setting it to 0 clears the line's discount.
+#[derive(Debug, Deserialize)]
+pub struct SetItemDiscountReq { pub discount: f64 }
 #[derive(Debug, Deserialize)]
 pub struct UpdateWaitstaffReq { pub waitstaff_id: String, pub waitstaff_name: String }
 #[derive(Debug, Deserialize)]

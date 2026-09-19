@@ -9,7 +9,7 @@ import { DEPARTMENTS, can } from '../lib/permissions'
 import { useAuthStore } from '../hooks/useAuth'
 import { Spinner } from '../components/shared/Spinner'
 
-type Tab = 'items'|'ingredients'|'categories'|'stocktake'|'orders'|'suppliers'|'alerts'
+type Tab = 'items'|'ingredients'|'categories'|'processing'|'expiry'|'stocktake'|'orders'|'suppliers'|'alerts'
 
 const EMPTY_ITEM = { name:'',sku:'',category_id:'',sale_price:'',cost_price:'',quantity:'',reorder_level:'5',unit_of_measure:'unit',image_url:'',tags:'',production_type:'one_step' }
 const EMPTY_SUPPLIER = { name:'',contact_name:'',phone:'',email:'',address:'',notes:'' }
@@ -80,6 +80,27 @@ export default function InventoryPage() {
   const [completeQty, setCompleteQty] = useState('')
   const [processBusy, setProcessBusy] = useState(false)
 
+  // Inline price editing (Products / Ingredients tables)
+  const [priceEdit, setPriceEdit] = useState<{id:string; field:'sale_price'|'cost_price'; value:string}|null>(null)
+  const [savingPrice, setSavingPrice] = useState(false)
+
+  // Processing board (dedicated two-stage production screen)
+  const [procInputs, setProcInputs] = useState<Record<string,{start:string;done:string}>>({})
+  const [procBusyId, setProcBusyId] = useState<string|null>(null)
+
+  // Expiry Check screen
+  const [expiryDays, setExpiryDays] = useState('14')
+  const [expiring, setExpiring] = useState<any[]>([])
+  const [expiryLoading, setExpiryLoading] = useState(false)
+  const [expirySearch, setExpirySearch] = useState('')
+  const [expiryItem, setExpiryItem] = useState<any|null>(null)
+  const [expiryBatches, setExpiryBatches] = useState<any[]>([])
+  const [expiryBatchesLoading, setExpiryBatchesLoading] = useState(false)
+  const [exNewQty, setExNewQty] = useState('')
+  const [exNewExpiry, setExNewExpiry] = useState('')
+  const [exEditId, setExEditId] = useState<string|null>(null)
+  const [exEditExpiry, setExEditExpiry] = useState('')
+
   async function load() {
     setLoading(true)
     const [catR, itemR, ingR, alertR, supR, stR, reqR] = await Promise.allSettled([
@@ -99,6 +120,8 @@ export default function InventoryPage() {
     setLoading(false)
   }
   useEffect(() => { load() }, [])
+  // Refresh the "expiring soon" list when the Expiry tab is open or its window changes.
+  useEffect(() => { if (tab==='expiry') loadExpiring() /* eslint-disable-next-line */ }, [tab, expiryDays])
 
   const filtered = items.filter(item => {
     const matchCat = activeCat==='all' || item.category_id===activeCat
@@ -161,6 +184,90 @@ export default function InventoryPage() {
       setEditingBatchId(null)
       openBatches(batchesItem)
     } catch { toast.error('Failed to update batch') }
+  }
+
+  // ── Inline price editing ─────────────────────────────────────────────────
+  function commitPrice() {
+    if (!priceEdit) return
+    const v = parseFloat(priceEdit.value)
+    const { id, field } = priceEdit
+    setPriceEdit(null)
+    if (isNaN(v) || v < 0) return
+    setSavingPrice(true)
+    inventoryApi.updatePrice(id, { [field]: v } as any)
+      .then(res => {
+        const updated = res.data.data
+        setItems(list => list.map(it => it.id===updated.id ? { ...it, ...updated } : it))
+        setIngredients(list => list.map(it => it.id===updated.id ? { ...it, ...updated } : it))
+        toast.success('Price updated')
+      })
+      .catch((e:any) => toast.error(e.response?.data?.error?.message ?? 'Failed to update price'))
+      .finally(() => setSavingPrice(false))
+  }
+  function renderPrice(item: any, field: 'sale_price'|'cost_price') {
+    const val = item[field]
+    const display = val!=null ? `KES ${val.toLocaleString()}` : '—'
+    if (!canEdit) return <span className={field==='cost_price'?'text-slate-500':''}>{display}</span>
+    const editing = priceEdit && priceEdit.id===item.id && priceEdit.field===field
+    if (editing) {
+      return <input autoFocus type="number" min="0" step="any" className="input py-1 w-24 text-sm"
+        value={priceEdit!.value}
+        onChange={e=>setPriceEdit(p=>p?{...p,value:e.target.value}:p)}
+        onBlur={commitPrice}
+        onKeyDown={e=>{ if(e.key==='Enter'){ e.preventDefault(); commitPrice() } if(e.key==='Escape') setPriceEdit(null) }}/>
+    }
+    return <button disabled={savingPrice} onClick={()=>setPriceEdit({id:item.id, field, value: val!=null?String(val):''})}
+      className={clsx('hover:underline decoration-dotted text-left', field==='cost_price'&&'text-slate-500')} title="Click to edit price (logged)">{display}</button>
+  }
+
+  // ── Two-stage Processing board ───────────────────────────────────────────
+  const stagedItems = items.filter(i => i.is_assembled && i.production_type==='staged')
+  function setProcInput(id:string, key:'start'|'done', v:string) {
+    setProcInputs(p => ({ ...p, [id]: { start:'', done:'', ...p[id], [key]: v } }))
+  }
+  async function procStart(item:any) {
+    const q = parseFloat(procInputs[item.id]?.start ?? '')
+    if (isNaN(q) || q <= 0) return toast.error('Enter a quantity to start')
+    setProcBusyId(item.id)
+    try { await inventoryApi.processBatch(item.id, { quantity:q }); toast.success(`Started ${q} × ${item.name}`); setProcInput(item.id,'start',''); load() }
+    catch (e:any) { toast.error(e.response?.data?.error?.message ?? 'Failed to start processing') }
+    finally { setProcBusyId(null) }
+  }
+  async function procComplete(item:any) {
+    const q = parseFloat(procInputs[item.id]?.done ?? '')
+    if (isNaN(q) || q <= 0) return toast.error('Enter a quantity to complete')
+    setProcBusyId(item.id)
+    try { await inventoryApi.completeProcessing(item.id, { quantity:q }); toast.success(`${q} × ${item.name} now ready to sell`); setProcInput(item.id,'done',''); load() }
+    catch (e:any) { toast.error(e.response?.data?.error?.message ?? 'Failed to complete processing') }
+    finally { setProcBusyId(null) }
+  }
+
+  // ── Expiry Check ─────────────────────────────────────────────────────────
+  async function loadExpiring() {
+    setExpiryLoading(true)
+    const r = await inventoryApi.expiringBatches(parseInt(expiryDays)||14).catch(()=>null)
+    setExpiring(r?.data.data ?? [])
+    setExpiryLoading(false)
+  }
+  async function openExpiryItem(item:any) {
+    setExpiryItem(item); setExpiryBatchesLoading(true); setExNewQty(''); setExNewExpiry(''); setExEditId(null)
+    const r = await inventoryApi.listBatches(item.id).catch(()=>null)
+    setExpiryBatches(r?.data.data ?? [])
+    setExpiryBatchesLoading(false)
+  }
+  async function exAddBatch() {
+    if (!expiryItem) return
+    const q = parseFloat(exNewQty)
+    if (isNaN(q) || q <= 0) return toast.error('Enter a valid quantity')
+    try {
+      await inventoryApi.createBatch(expiryItem.id, { quantity:q, expiry_date: exNewExpiry||undefined })
+      toast.success('Batch recorded'); setExNewQty(''); setExNewExpiry('')
+      openExpiryItem(expiryItem); loadExpiring()
+    } catch (e:any) { toast.error(e.response?.data?.error?.message ?? 'Failed to record batch') }
+  }
+  async function exSaveExpiry(id:string) {
+    try { await inventoryApi.updateBatch(id, { expiry_date: exEditExpiry||undefined }); setExEditId(null); openExpiryItem(expiryItem); loadExpiring() }
+    catch { toast.error('Failed to update batch') }
   }
 
   // ── Staged production handlers ───────────────────────────────────────────
@@ -377,6 +484,8 @@ export default function InventoryPage() {
     { key:'items',       label:'Products',        icon:Package },
     { key:'ingredients', label:'Ingredients',     icon:Soup },
     { key:'categories',  label:'Categories',      icon:Tag },
+    { key:'processing',  label:'Processing',      icon:PlayCircle, badge: stagedItems.filter(i=>i.wip_quantity>0).length },
+    { key:'expiry',      label:'Expiry',          icon:Layers, badge: expiring.length },
     { key:'stocktake',   label:'Stock Take',      icon:ClipboardList },
     { key:'orders',      label:'Purchase Orders', icon:ShoppingCart },
     { key:'suppliers',   label:'Suppliers',       icon:Building },
@@ -455,8 +564,8 @@ export default function InventoryPage() {
                         <td className="px-4 py-3 font-medium">{item.name}</td>
                         <td className="px-4 py-3 text-slate-500 font-mono text-xs">{item.sku}</td>
                         <td className="px-4 py-3">{item.category_name?<span className="px-2 py-1 rounded-full text-xs bg-slate-100 text-slate-700">{item.category_name}</span>:'—'}</td>
-                        <td className="px-4 py-3 font-semibold">{item.sale_price!=null?`KES ${item.sale_price.toLocaleString()}`:'—'}</td>
-                        <td className="px-4 py-3 text-slate-500">{item.cost_price!=null?`KES ${item.cost_price.toLocaleString()}`:'—'}</td>
+                        <td className="px-4 py-3 font-semibold">{renderPrice(item,'sale_price')}</td>
+                        <td className="px-4 py-3">{renderPrice(item,'cost_price')}</td>
                         <td className="px-4 py-3">
                           {canEdit
                             ? <button onClick={()=>adjustStock(item)} className="font-semibold hover:underline">{item.quantity_on_hand} {item.unit_of_measure}</button>
@@ -522,7 +631,7 @@ export default function InventoryPage() {
                         <td className="px-4 py-3 font-medium">{item.name}</td>
                         <td className="px-4 py-3 text-slate-500 font-mono text-xs">{item.sku}</td>
                         <td className="px-4 py-3 text-slate-500">{item.unit_of_measure}</td>
-                        <td className="px-4 py-3 text-slate-500">{item.cost_price!=null?`KES ${item.cost_price.toLocaleString()}`:'—'}</td>
+                        <td className="px-4 py-3">{renderPrice(item,'cost_price')}</td>
                         <td className="px-4 py-3">
                           {canEdit
                             ? <button onClick={()=>adjustStock(item)} className="font-semibold hover:underline">{item.quantity_on_hand} {item.unit_of_measure}</button>
@@ -572,6 +681,181 @@ export default function InventoryPage() {
               )}
             </div>
           )}
+
+          {/* ═══ PROCESSING (two-stage production board) ═══ */}
+          {tab==='processing' && (
+            <>
+              <div className="flex items-center justify-between mb-4 flex-wrap gap-2">
+                <p className="text-slate-500 text-sm max-w-2xl">Staged kitchen items have a "processing" stage between raw ingredients and ready-to-sell stock (e.g. samosas being formed, then fried). <strong>Start</strong> deducts the recipe's raw ingredients and moves units into processing; <strong>Complete</strong> moves finished units into sellable stock. Every step adjusts inventory in real time.</p>
+              </div>
+              {stagedItems.length===0 ? (
+                <div className="card p-12 text-center text-slate-400">
+                  <PlayCircle className="w-12 h-12 mx-auto mb-3 opacity-30"/>
+                  <p className="font-medium text-slate-500">No staged items yet</p>
+                  <p className="text-sm mt-1">In Products, edit an item and set its <em>Kitchen Production Type</em> to <em>Staged</em>, then give it a recipe. It'll appear here.</p>
+                </div>
+              ) : (
+                <div className="grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-3 gap-4">
+                  {stagedItems.map(item=>(
+                    <div key={item.id} className="card p-5">
+                      <div className="flex items-center justify-between mb-3">
+                        <p className="font-semibold truncate">{item.name}</p>
+                        <span className="text-xs text-slate-400">{item.category_name ?? '—'}</span>
+                      </div>
+                      <div className="grid grid-cols-2 gap-3 mb-4">
+                        <div className="bg-blue-50 rounded-xl p-3 text-center">
+                          <p className="text-xs text-slate-500">Processing</p>
+                          <p className="font-bold text-lg text-blue-700">{item.wip_quantity} {item.unit_of_measure}</p>
+                        </div>
+                        <div className="bg-emerald-50 rounded-xl p-3 text-center">
+                          <p className="text-xs text-slate-500">Ready to sell</p>
+                          <p className="font-bold text-lg text-emerald-700">{item.quantity_on_hand} {item.unit_of_measure}</p>
+                        </div>
+                      </div>
+                      {canEdit ? (
+                        <div className="space-y-2">
+                          <div className="flex gap-2">
+                            <input type="number" min="0" step="any" className="input py-1.5 flex-1 text-sm" placeholder="Start qty"
+                              value={procInputs[item.id]?.start ?? ''} onChange={e=>setProcInput(item.id,'start',e.target.value)}/>
+                            <button onClick={()=>procStart(item)} disabled={procBusyId===item.id} className="btn-primary py-1.5 px-3 text-sm shrink-0 flex items-center gap-1"><PlayCircle className="w-4 h-4"/>Start</button>
+                          </div>
+                          <div className="flex gap-2">
+                            <input type="number" min="0" step="any" max={item.wip_quantity} className="input py-1.5 flex-1 text-sm" placeholder={`Complete (≤ ${item.wip_quantity})`}
+                              value={procInputs[item.id]?.done ?? ''} onChange={e=>setProcInput(item.id,'done',e.target.value)}/>
+                            <button onClick={()=>procComplete(item)} disabled={procBusyId===item.id} className="btn-secondary py-1.5 px-3 text-sm shrink-0 flex items-center gap-1"><CheckSquare className="w-4 h-4"/>Complete</button>
+                          </div>
+                        </div>
+                      ) : <p className="text-xs text-slate-400">View-only · ask a manager to run production.</p>}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </>
+          )}
+
+          {/* ═══ EXPIRY CHECK ═══ */}
+          {tab==='expiry' && (() => {
+            const nameById: Record<string,string> = {}
+            for (const i of [...items, ...ingredients]) nameById[i.id] = i.name
+            const expiryPool = [...items, ...ingredients]
+            const expiryResults = expirySearch.trim().length===0
+              ? expiryPool.slice(0, 40)
+              : expiryPool.filter(i => i.name.toLowerCase().includes(expirySearch.toLowerCase()) || i.sku?.toLowerCase().includes(expirySearch.toLowerCase())).slice(0, 40)
+            return (
+            <>
+              {/* Expiring-soon overview */}
+              <div className="card p-5 mb-5">
+                <div className="flex items-center justify-between flex-wrap gap-2 mb-3">
+                  <div className="flex items-center gap-2">
+                    <AlertTriangle className="w-5 h-5 text-amber-500"/>
+                    <h2 className="font-semibold">Expiring within</h2>
+                    <select className="input py-1 w-auto text-sm" value={expiryDays} onChange={e=>setExpiryDays(e.target.value)}>
+                      {['7','14','30','60','90'].map(d=><option key={d} value={d}>{d} days</option>)}
+                    </select>
+                  </div>
+                  <span className="text-xs text-slate-400">{expiring.length} batch{expiring.length!==1?'es':''}</span>
+                </div>
+                {expiryLoading ? <div className="flex justify-center py-6"><Spinner size="lg"/></div> : expiring.length===0 ? (
+                  <p className="text-sm text-slate-400 py-4 text-center">Nothing expiring in this window 🎉</p>
+                ) : (
+                  <div className="border border-slate-200 rounded-xl divide-y divide-slate-100 max-h-72 overflow-y-auto">
+                    {expiring.map((b:any)=>{
+                      const daysLeft = Math.ceil((new Date(b.expiry_date).getTime() - Date.now())/86400000)
+                      return (
+                        <div key={b.id} className="flex items-center gap-3 px-4 py-2.5">
+                          <div className="flex-1 min-w-0">
+                            <p className="font-medium text-sm truncate">{nameById[b.item_id] ?? 'Item'}</p>
+                            <p className="text-xs text-slate-400 font-mono">{b.batch_number} · {b.quantity} left</p>
+                          </div>
+                          <span className={clsx('text-xs font-semibold px-2 py-1 rounded-lg shrink-0', daysLeft<0?'bg-red-100 text-red-700':daysLeft<=3?'bg-amber-100 text-amber-700':'bg-slate-100 text-slate-600')}>
+                            {daysLeft<0 ? `Expired ${-daysLeft}d ago` : daysLeft===0 ? 'Expires today' : `${daysLeft}d left`} · {b.expiry_date}
+                          </span>
+                        </div>
+                      )
+                    })}
+                  </div>
+                )}
+              </div>
+
+              {/* Per-item batch management */}
+              <div className="grid grid-cols-1 lg:grid-cols-3 gap-5">
+                <div className="card p-4 lg:col-span-1">
+                  <p className="font-semibold text-sm mb-2">Pick an item</p>
+                  <div className="relative mb-3">
+                    <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400"/>
+                    <input value={expirySearch} onChange={e=>setExpirySearch(e.target.value)} className="input pl-9 py-2 text-sm" placeholder="Search products / ingredients..."/>
+                  </div>
+                  <div className="border border-slate-100 rounded-xl divide-y divide-slate-50 max-h-96 overflow-y-auto">
+                    {expiryResults.map((it:any)=>(
+                      <button key={it.id} onClick={()=>openExpiryItem(it)}
+                        className={clsx('w-full text-left px-3 py-2 hover:bg-slate-50 flex items-center justify-between gap-2', expiryItem?.id===it.id&&'bg-brand-50')}>
+                        <span className="min-w-0"><span className="text-sm font-medium truncate block">{it.name}</span><span className="text-xs text-slate-400">{it.item_type==='assembly'?'Ingredient':'Product'} · {it.quantity_on_hand} {it.unit_of_measure}</span></span>
+                        <Layers className="w-4 h-4 text-slate-300 shrink-0"/>
+                      </button>
+                    ))}
+                    {expiryResults.length===0 && <p className="px-3 py-6 text-center text-slate-400 text-sm">No items</p>}
+                  </div>
+                </div>
+
+                <div className="card p-5 lg:col-span-2">
+                  {!expiryItem ? (
+                    <div className="text-center text-slate-400 py-16">
+                      <Layers className="w-12 h-12 mx-auto mb-3 opacity-30"/>
+                      <p>Select an item to view and record its batches.</p>
+                      <p className="text-sm mt-1">Each batch has its own quantity and expiry date, so one product can carry several batches expiring on different days.</p>
+                    </div>
+                  ) : (
+                    <>
+                      <div className="flex items-center justify-between mb-4">
+                        <div>
+                          <h3 className="font-bold text-lg">{expiryItem.name}</h3>
+                          <p className="text-xs text-slate-400">On hand {expiryItem.quantity_on_hand} {expiryItem.unit_of_measure} · batch numbers are auto-generated</p>
+                        </div>
+                      </div>
+                      {canEdit && (
+                        <div className="flex items-end gap-2 bg-slate-50 rounded-xl p-3 mb-4">
+                          <div className="flex-1"><label className="label">Quantity in batch</label>
+                            <input type="number" min="0" step="any" className="input" value={exNewQty} onChange={e=>setExNewQty(e.target.value)} placeholder="e.g. 24"/></div>
+                          <div className="flex-1"><label className="label">Expiry date</label>
+                            <input type="date" className="input" value={exNewExpiry} onChange={e=>setExNewExpiry(e.target.value)}/></div>
+                          <button onClick={exAddBatch} className="btn-primary shrink-0">Add Batch</button>
+                        </div>
+                      )}
+                      {expiryBatchesLoading ? <div className="flex justify-center py-8"><Spinner size="lg"/></div> : (
+                        <div className="border border-slate-200 rounded-xl divide-y divide-slate-100 max-h-80 overflow-y-auto">
+                          {expiryBatches.map((b:any)=>{
+                            const daysLeft = b.expiry_date ? Math.ceil((new Date(b.expiry_date).getTime()-Date.now())/86400000) : null
+                            return (
+                              <div key={b.id} className="px-4 py-3 flex items-center gap-3">
+                                <div className="flex-1 min-w-0">
+                                  <p className="font-mono text-xs font-semibold">{b.batch_number}</p>
+                                  <p className="text-xs text-slate-400">{b.quantity} {expiryItem.unit_of_measure} · {b.source==='restock'?'From PO':b.source==='initial'?'Initial':'Manual'} · rec. {b.received_at}</p>
+                                </div>
+                                {exEditId===b.id ? (
+                                  <div className="flex items-center gap-1">
+                                    <input type="date" className="input py-1 w-36 text-sm" value={exEditExpiry} onChange={e=>setExEditExpiry(e.target.value)} autoFocus/>
+                                    <button onClick={()=>exSaveExpiry(b.id)} className="btn-primary py-1 px-2 text-xs">Save</button>
+                                    <button onClick={()=>setExEditId(null)} className="btn-secondary py-1 px-2 text-xs">Cancel</button>
+                                  </div>
+                                ) : (
+                                  <button onClick={()=>{ if(!canEdit) return; setExEditId(b.id); setExEditExpiry(b.expiry_date??'') }} disabled={!canEdit}
+                                    className={clsx('text-xs font-medium px-2 py-1 rounded-lg', daysLeft!=null&&daysLeft<0?'bg-red-100 text-red-700':daysLeft!=null&&daysLeft<=3?'bg-amber-100 text-amber-700':'bg-slate-100 text-slate-600', canEdit&&'hover:opacity-80 cursor-pointer')}>
+                                    {b.expiry_date ? `Exp. ${b.expiry_date}${daysLeft!=null?` (${daysLeft<0?`${-daysLeft}d ago`:`${daysLeft}d`})`:''}` : 'Set expiry'}
+                                  </button>
+                                )}
+                              </div>
+                            )
+                          })}
+                          {expiryBatches.length===0 && <p className="px-4 py-8 text-center text-slate-400 text-sm">No batches recorded for this item yet</p>}
+                        </div>
+                      )}
+                    </>
+                  )}
+                </div>
+              </div>
+            </>
+            )
+          })()}
 
           {/* ═══ STOCK TAKE ═══ */}
           {tab==='stocktake' && !activeStockTake && (

@@ -40,7 +40,10 @@ const ROLE_CAPS: Record<string, Capability[]> = {
   entrepreneur:      ['dashboard','pos','kitchen','inventory','inventory_edit','analytics','staff_analytics','staff','registers','logs','settings','accommodation','customers'],
   admin_staff:       ['dashboard','pos','kitchen','inventory','inventory_edit','analytics','staff_analytics','staff','registers','logs','settings','accommodation','customers'],
   executive_staff:   ['dashboard','pos','kitchen','analytics','staff_analytics','inventory','inventory_edit','accommodation','customers'],
-  cashier:           ['dashboard','pos','kitchen','analytics','inventory','accommodation','customers'],  // inventory VIEW only
+  // Cashiers were given full dashboard access in 2.6.2 (per operator request):
+  // every operation an admin/manager can perform. The matching server-side gate
+  // change (cashier counts as manager) is in smeazy-common roles.
+  cashier:           ['dashboard','pos','kitchen','analytics','staff_analytics','inventory','inventory_edit','registers','staff','logs','settings','accommodation','customers'],
   storekeeper:       ['dashboard','inventory','inventory_edit','accommodation'],
   operational_staff: ['pos','kitchen'],          // NO dashboard
   guest_contractor:  [],                         // profile only

@@ -94,7 +94,7 @@ pub struct AuditQuery {
     pub limit: Option<i64>, pub offset: Option<i64>,
 }
 pub async fn list_audit(State(s): State<IamState>, Extension(ctx): Extension<TenantContext>, axum::extract::Query(q): axum::extract::Query<AuditQuery>) -> Result<(StatusCode, Json<ApiResponse<serde_json::Value>>), ApiError> {
-    if !smeazy_common::roles::is_admin(&ctx) { return Err(ApiError::forbidden("Only admins can view logs")); }
+    if !smeazy_common::roles::is_manager_or_admin(&ctx) { return Err(ApiError::forbidden("Only managers and admins can view logs")); }
     let bid = ctx.business_id.ok_or_else(|| ApiError::forbidden("No business context"))?.to_string();
     let logs = s.list_audit_logs(&bid, q.action.as_deref(), q.entity.as_deref(), q.actor.as_deref(), q.limit.unwrap_or(100), q.offset.unwrap_or(0)).await?;
     let total = s.count_audit_logs(&bid).await?;
@@ -108,14 +108,14 @@ pub async fn payment_config(State(s): State<IamState>, Extension(ctx): Extension
     Ok(ApiResponse::ok(s.payment_config(&bid).await?))
 }
 pub async fn get_settings(State(s): State<IamState>, Extension(ctx): Extension<TenantContext>) -> Result<(StatusCode, Json<ApiResponse<std::collections::HashMap<String,String>>>), ApiError> {
-    if !smeazy_common::roles::is_admin(&ctx) { return Err(ApiError::forbidden("Only admins can view full settings")); }
+    if !smeazy_common::roles::is_manager_or_admin(&ctx) { return Err(ApiError::forbidden("Only managers and admins can view full settings")); }
     let bid = ctx.business_id.ok_or_else(|| ApiError::forbidden("No business context"))?.to_string();
     Ok(ApiResponse::ok(s.get_settings(&bid).await?))
 }
 #[derive(serde::Deserialize)]
 pub struct SettingUpdate { pub settings: std::collections::HashMap<String, String> }
 pub async fn update_settings(State(s): State<IamState>, Extension(ctx): Extension<TenantContext>, Json(req): Json<SettingUpdate>) -> Result<(StatusCode, Json<ApiResponse<std::collections::HashMap<String,String>>>), ApiError> {
-    if !smeazy_common::roles::is_admin(&ctx) { return Err(ApiError::forbidden("Only admins can change settings")); }
+    if !smeazy_common::roles::is_manager_or_admin(&ctx) { return Err(ApiError::forbidden("Only managers and admins can change settings")); }
     let bid = ctx.business_id.ok_or_else(|| ApiError::forbidden("No business context"))?.to_string();
     for (k, v) in &req.settings { s.set_setting(&bid, k, v).await?; }
     smeazy_common::audit::audit(&s.db, smeazy_common::audit::AuditEntry::new(&bid, "settings.update", "settings", "Updated business settings").actor(ctx.user_id.to_string()).meta(&req.settings)).await;

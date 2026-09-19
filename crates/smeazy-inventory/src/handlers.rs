@@ -39,6 +39,12 @@ pub async fn update_item(State(s): State<InvState>, Extension(ctx): Extension<Te
     smeazy_common::audit::audit(&s.db, smeazy_common::audit::AuditEntry::new(&bid, "inventory.item_update", "inventory_item", format!("Edited item {}", item.name)).actor(ctx.user_id.to_string()).entity(&item.id, item.name.clone())).await;
     Ok(ApiResponse::ok(item))
 }
+pub async fn update_price(State(s): State<InvState>, Extension(ctx): Extension<TenantContext>, Path(id): Path<String>, Json(req): Json<UpdatePriceReq>) -> Result<(StatusCode, Json<ApiResponse<InventoryItem>>), ApiError> {
+    // Cashiers (storekeeper tier and above) can change prices from the floor.
+    // The change is logged with its before/after values inside update_price.
+    if !smeazy_common::roles::is_storekeeper_or_above(&ctx) { return Err(ApiError::forbidden("You don't have permission to change prices")); }
+    Ok(ApiResponse::ok(s.update_price(&ctx, &id, req).await?))
+}
 pub async fn adjust_stock(State(s): State<InvState>, Extension(ctx): Extension<TenantContext>, Path(id): Path<String>, Json(req): Json<AdjustStockReq>) -> Result<(StatusCode, Json<ApiResponse<InventoryItem>>), ApiError> {
     // Direct stock adjustment is an admin/manager action (cashiers use spoil/sales which self-adjust).
     if !smeazy_common::roles::is_manager_or_admin(&ctx) { return Err(ApiError::forbidden("Only admins and managers can directly adjust stock. Cashiers record spoils or sales instead.")); }

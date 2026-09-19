@@ -91,6 +91,38 @@ impl InventoryService {
         self.get_item(id).await
     }
 
+    /// Quick sale/cost price change from the Inventory list, logged with its
+    /// before→after values so the audit trail shows exactly who changed a price
+    /// and by how much. At least one of sale_price / cost_price must be given.
+    pub async fn update_price(&self, ctx: &TenantContext, item_id: &str, req: UpdatePriceReq) -> Result<InventoryItem, ApiError> {
+        if req.sale_price.is_none() && req.cost_price.is_none() {
+            return Err(ApiError::bad_request("No price supplied"));
+        }
+        if let Some(p) = req.sale_price { if p < 0.0 { return Err(ApiError::bad_request("Sale price cannot be negative")); } }
+        if let Some(p) = req.cost_price { if p < 0.0 { return Err(ApiError::bad_request("Cost price cannot be negative")); } }
+        let bid = ctx.business_id.map(|b| b.to_string()).unwrap_or_default();
+        let before = self.get_item(item_id).await?;
+        if before.business_id != bid { return Err(ApiError::not_found("Item not found")); }
+
+        sqlx::query("UPDATE inventory_items SET sale_price=COALESCE(?,sale_price), cost_price=COALESCE(?,cost_price), updated_at=datetime('now') WHERE id=? AND business_id=?")
+            .bind(req.sale_price).bind(req.cost_price).bind(item_id).bind(&bid)
+            .execute(&self.db).await.map_err(ApiError::from)?;
+        let after = self.get_item(item_id).await?;
+
+        let mut parts: Vec<String> = Vec::new();
+        if req.sale_price.is_some() && before.sale_price != after.sale_price {
+            parts.push(format!("sale {}→{}", before.sale_price.map(|p| p.to_string()).unwrap_or_else(|| "—".into()), after.sale_price.map(|p| p.to_string()).unwrap_or_else(|| "—".into())));
+        }
+        if req.cost_price.is_some() && before.cost_price != after.cost_price {
+            parts.push(format!("cost {}→{}", before.cost_price.map(|p| p.to_string()).unwrap_or_else(|| "—".into()), after.cost_price.map(|p| p.to_string()).unwrap_or_else(|| "—".into())));
+        }
+        let summary = if parts.is_empty() { format!("Price unchanged for {}", after.name) } else { format!("Price change on {} — {}", after.name, parts.join(", ")) };
+        smeazy_common::audit::audit(&self.db, smeazy_common::audit::AuditEntry::new(&bid, "inventory.price_update", "inventory_item", summary)
+            .actor(ctx.user_id.to_string()).entity(item_id, after.name.clone())
+            .meta(&serde_json::json!({ "old_sale": before.sale_price, "new_sale": after.sale_price, "old_cost": before.cost_price, "new_cost": after.cost_price }))).await;
+        Ok(after)
+    }
+
     pub async fn adjust_stock(&self, ctx: &TenantContext, item_id: &str, req: AdjustStockReq) -> Result<InventoryItem, ApiError> {
         let bid = ctx.business_id.map(|b| b.to_string()).unwrap_or_default();
         sqlx::query("UPDATE inventory_items SET quantity_on_hand = quantity_on_hand + ?, updated_at=datetime('now') WHERE id=? AND business_id=?")
@@ -100,6 +132,9 @@ impl InventoryService {
             .bind(Uuid::new_v4().to_string()).bind(item_id).bind(req.delta)
             .bind(ctx.user_id.to_string()).bind(&req.reason)
             .execute(&self.db).await.map_err(ApiError::from)?;
+        // A negative manual adjustment draws down batches FEFO too, so the Expiry
+        // overlay stays consistent with the item's real stock level.
+        if req.delta < 0.0 { self.consume_batches_fefo(&bid, item_id, -req.delta).await; }
         let item = self.get_item(item_id).await?;
         smeazy_common::audit::audit(&self.db, smeazy_common::audit::AuditEntry::new(&bid, "stock.adjustment", "inventory_item", format!("Manual stock adjustment {:+} on {}", req.delta, item.name))
             .actor(ctx.user_id.to_string()).entity(item_id, item.name.clone())
@@ -124,6 +159,7 @@ impl InventoryService {
                 .bind(Uuid::new_v4().to_string()).bind(item_id).bind(-quantity)
                 .bind(ctx.user_id.to_string()).bind(reason)
                 .execute(&self.db).await.map_err(ApiError::from)?;
+            self.consume_batches_fefo(&bid, item_id, quantity).await;
         }
         let item = self.get_item(item_id).await?;
         smeazy_common::audit::audit(&self.db, smeazy_common::audit::AuditEntry::new(&bid, "stock.spoil", "inventory_item", format!("Spoilage of {} × {}{}", quantity, item.name, if depleted { " (ingredients depleted)" } else { "" }))
@@ -164,7 +200,31 @@ impl InventoryService {
         sqlx::query("INSERT INTO inventory_movements (id,item_id,order_id,movement_type,delta_qty) VALUES (?,?,?,'sale',?)")
             .bind(Uuid::new_v4().to_string()).bind(item_id).bind(order_id).bind(-quantity)
             .execute(&self.db).await.map_err(ApiError::from)?;
+        if let Some(ref bid) = bid { self.consume_batches_fefo(bid, item_id, quantity).await; }
         Ok(())
+    }
+
+    /// Keep the batch overlay in step with real stock: whenever stock leaves an
+    /// item (a sale, a spoil, an ingredient depletion, a staged-production
+    /// start, or a negative manual adjustment), draw the quantity down from its
+    /// open batches earliest-expiry-first (FEFO). This is what makes the Expiry
+    /// screen show *remaining* batch quantities rather than the amount first
+    /// received. Best-effort and never fails the caller: batches are an overlay,
+    /// so if they don't fully cover the quantity the remainder is simply not
+    /// represented (and a batch is never driven below zero).
+    pub async fn consume_batches_fefo(&self, business_id: &str, item_id: &str, quantity: f64) {
+        let mut remaining = quantity;
+        if remaining <= 0.0 { return; }
+        let batches = sqlx::query_as::<_, (String, f64)>(
+            "SELECT id, quantity FROM inventory_batches WHERE business_id=? AND item_id=? AND quantity > 0 ORDER BY (expiry_date IS NULL), expiry_date, received_at")
+            .bind(business_id).bind(item_id).fetch_all(&self.db).await.unwrap_or_default();
+        for (batch_id, batch_qty) in batches {
+            if remaining <= 0.0001 { break; }
+            let take = remaining.min(batch_qty);
+            let _ = sqlx::query("UPDATE inventory_batches SET quantity = quantity - ?, updated_at=datetime('now') WHERE id=?")
+                .bind(take).bind(&batch_id).execute(&self.db).await;
+            remaining -= take;
+        }
     }
 
     // ── CSV import/export ───────────────────────────────────────────────────
@@ -627,6 +687,7 @@ impl InventoryService {
                 .bind(Uuid::new_v4().to_string()).bind(&ing_id).bind(order_id).bind(movement).bind(-consumed)
                 .bind(format!("Ingredient depletion for assembled product ({} units)", units))
                 .execute(&self.db).await.map_err(ApiError::from)?;
+            self.consume_batches_fefo(business_id, &ing_id, consumed).await;
         }
         Ok(true)
     }
@@ -667,6 +728,7 @@ impl InventoryService {
                 .bind(Uuid::new_v4().to_string()).bind(ing_id).bind(-consumed)
                 .bind(format!("Put into production for staged item ({} units)", req.quantity))
                 .execute(&self.db).await.map_err(ApiError::from)?;
+            self.consume_batches_fefo(&bid, ing_id, consumed).await;
         }
         sqlx::query("UPDATE inventory_items SET wip_quantity = wip_quantity + ?, updated_at=datetime('now') WHERE id=?")
             .bind(req.quantity).bind(product_id).execute(&self.db).await.map_err(ApiError::from)?;

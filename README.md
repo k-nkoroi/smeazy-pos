@@ -2,6 +2,24 @@
 
 A modular, production-grade point-of-sale platform built for hospitality businesses (bars, restaurants, pools, accommodation). **Fully offline-first**: the Rust binary embeds SQLite and auto-creates the database on first run — no Docker, no PostgreSQL, no network required. Ships as a native Windows desktop app via Tauri 2, or run the API + web frontend separately for development.
 
+## What's new in 2.6.2
+
+**Clearer thermal receipts.** Secondary receipt lines (date, table, VAT breakdown, payment method, footer, and the Order Note's meta lines) were faint grey — which prints almost invisibly on dot-based thermal heads. They're now near-black and only slightly smaller than the main lines, so the hierarchy is kept but everything is legible on paper. Printing also forces true black across the whole ticket.
+
+**Print Bill before payment.** A new **Print Bill** button in an open order's header prints a pre-payment proforma ("PROFORMA · NOT A RECEIPT OF PAYMENT") straight from the live order, so a customer can be handed the amount due before cash/M-Pesa is captured. The order stays open — you complete checkout as normal afterwards.
+
+**Per-item discounts.** Each line on an order now has a discount button (the **%** icon) — enter a KES amount or a percentage off that line. Discounted lines show the struck-through original price, the receipt prints each item's discount and a **Total discount** line, and every per-item discount is written to the audit log.
+
+**Edit prices from the Inventory list.** Sale and cost prices are now click-to-edit directly in the Products and Ingredients tables (a dedicated, permission-checked endpoint). Every change is logged with its exact before → after values under `inventory.price_update`.
+
+**Two-stage Processing screen.** A new **Processing** tab in Inventory gives staged kitchen items (e.g. samosas) their own board: start production (deducts raw ingredients into a "processing" count) and complete it (moves finished units into sellable stock), all in one place.
+
+**Expiry Check screen.** A new **Expiry** tab lists everything expiring within a chosen window (7–90 days) and lets an authorized user pick any product or ingredient and record batches — quantity + expiry date, auto-numbered — so one item can carry several batches with different expiry dates. Batches are now drawn down FEFO (earliest-expiry-first) on every sale, spoil, production start, ingredient depletion and negative stock adjustment, so batch quantities stay in step with real stock.
+
+**Cashiers get full dashboard access.** Cashiers now have manager-level access to every dashboard operation (inventory editing, settings, logs, staff, registers), on both the UI and the API. *Security note: this widens what any cashier account can do — review who holds the cashier role.*
+
+**Kitchen Display navigation.** The Kitchen Display screen now has Back / Dashboard / Floor navigation in its header, so it's no longer a dead end.
+
 ## What's new in 2.6.1
 
 **Customizable receipt templates.** Settings → **Receipt Templates** lets you save named print templates — font (monospace/sans/serif), weight, size, and custom header/footer text — and mark one as the default per type. The checkout receipt now prints using your saved default template instead of a fixed layout.
@@ -77,8 +95,8 @@ This prints a **public key** and writes a **private key** file (optionally passw
 
 ### Build a versioned release
 ```bash
-git tag v2.6.1
-git push origin v2.6.1
+git tag v2.6.2
+git push origin v2.6.2
 ```
 The workflow builds, signs, and publishes a GitHub Release with the installer and `latest.json` attached — nothing further to do. Existing installs of the app will find this via **Settings → Check for Updates**.
 

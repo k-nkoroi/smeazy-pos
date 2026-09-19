@@ -1,8 +1,11 @@
 import { useEffect, useState, useRef } from 'react'
-import { Clock, ChefHat, CheckCircle, Truck, RefreshCw, Bell } from 'lucide-react'
+import { useNavigate } from 'react-router-dom'
+import { Clock, ChefHat, CheckCircle, Truck, RefreshCw, Bell, ArrowLeft, LayoutDashboard, Grid3X3 } from 'lucide-react'
 import toast from 'react-hot-toast'
 import clsx from 'clsx'
 import { kitchenApi } from '../lib/api'
+import { useAuthStore } from '../hooks/useAuth'
+import { can } from '../lib/permissions'
 import { Spinner } from '../components/shared/Spinner'
 
 interface KitchenItem {
@@ -34,6 +37,11 @@ const ITEM_STATUS: Record<string, string> = {
 }
 
 export default function KitchenPage() {
+  const navigate = useNavigate()
+  const roles = useAuthStore(s => s.user?.roles)
+  const hasDashboard = can(roles, 'dashboard')
+  const hasPos = can(roles, 'pos')
+  const homeHref = hasDashboard ? '/dashboard' : '/floor'
   const [orders, setOrders] = useState<KitchenOrder[]>([])
   const [loading, setLoading] = useState(true)
   const intervalRef = useRef<any>(null)
@@ -78,6 +86,10 @@ export default function KitchenPage() {
       {/* Header */}
       <div className="bg-slate-900 border-b border-slate-700 px-6 py-4 flex items-center justify-between sticky top-0 z-20">
         <div className="flex items-center gap-3">
+          <button onClick={() => navigate(homeHref)} title={hasDashboard ? 'Back to Dashboard' : 'Back to Floor'}
+            className="w-9 h-9 rounded-lg flex items-center justify-center text-slate-300 hover:text-white hover:bg-slate-800 transition-colors">
+            <ArrowLeft className="w-5 h-5" />
+          </button>
           <div className="w-10 h-10 bg-orange-600 rounded-xl flex items-center justify-center">
             <ChefHat className="w-5 h-5 text-white" />
           </div>
@@ -87,6 +99,18 @@ export default function KitchenPage() {
           </div>
         </div>
         <div className="flex items-center gap-3">
+          {hasDashboard && (
+            <button onClick={() => navigate('/dashboard')}
+              className="hidden sm:flex items-center gap-2 px-3 py-1.5 rounded-lg text-slate-300 hover:text-white hover:bg-slate-800 transition-colors text-sm font-medium">
+              <LayoutDashboard className="w-4 h-4" /> Dashboard
+            </button>
+          )}
+          {hasPos && (
+            <button onClick={() => navigate('/floor')}
+              className="hidden sm:flex items-center gap-2 px-3 py-1.5 rounded-lg text-slate-300 hover:text-white hover:bg-slate-800 transition-colors text-sm font-medium">
+              <Grid3X3 className="w-4 h-4" /> Floor
+            </button>
+          )}
           {pendingOrders.length > 0 && (
             <div className="flex items-center gap-2 bg-amber-600 rounded-lg px-3 py-1.5">
               <Bell className="w-4 h-4 animate-pulse" />

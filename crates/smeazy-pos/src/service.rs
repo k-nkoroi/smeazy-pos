@@ -124,6 +124,43 @@ impl PosService {
         Ok(Some(updated))
     }
 
+    /// Set (or clear) a discount on a single order line. The discount is an
+    /// absolute KES amount off that line's list total (unit_price × quantity),
+    /// clamped to [0, line total]. The order's running total_amount is kept in
+    /// step by applying the delta, so checkout maths (and every other place that
+    /// reads total_amount) stays correct. Logged so per-item discounts show in
+    /// the audit trail.
+    pub async fn set_item_discount(&self, ctx: &TenantContext, order_id: &str, item_id: &str, req: SetItemDiscountReq) -> Result<OrderItem, ApiError> {
+        let bid = ctx.business_id.ok_or_else(|| ApiError::forbidden("No business context"))?.to_string();
+        let order = sqlx::query_as::<_, PosOrder>("SELECT * FROM pos_orders WHERE id=? AND business_id=?")
+            .bind(order_id).bind(&bid).fetch_one(&self.db).await
+            .map_err(|_| ApiError::not_found("Order not found"))?;
+        if order.status != "open" { return Err(ApiError::bad_request("Cannot discount items on a closed order")); }
+
+        let item = sqlx::query_as::<_, OrderItem>("SELECT * FROM pos_order_items WHERE id=? AND order_id=?")
+            .bind(item_id).bind(order_id).fetch_one(&self.db).await
+            .map_err(|_| ApiError::not_found("Order item not found"))?;
+
+        let line_list = item.unit_price * item.quantity as f64;
+        let new_discount = req.discount.max(0.0).min(line_list);
+        let delta = new_discount - item.discount; // increase in discount reduces the total
+
+        sqlx::query("UPDATE pos_order_items SET discount=? WHERE id=?")
+            .bind(new_discount).bind(item_id).execute(&self.db).await.map_err(ApiError::from)?;
+        sqlx::query("UPDATE pos_orders SET total_amount = total_amount - ? WHERE id=?")
+            .bind(delta).bind(order_id).execute(&self.db).await.map_err(ApiError::from)?;
+
+        smeazy_common::audit::audit(&self.db, smeazy_common::audit::AuditEntry::new(&bid, "sale.item_discount", "order",
+            format!("Discount KES {:.2} on {} × {} ({})", new_discount, item.quantity, item.name,
+                order.table_name.clone().unwrap_or_else(|| "order".into())))
+            .actor(ctx.user_id.to_string())
+            .entity(order_id, order.table_name.clone().unwrap_or_else(|| order_id.to_string()))
+            .meta(&serde_json::json!({ "item_id": item_id, "name": item.name, "discount": new_discount, "line_list": line_list }))).await;
+
+        sqlx::query_as::<_, OrderItem>("SELECT * FROM pos_order_items WHERE id=?")
+            .bind(item_id).fetch_one(&self.db).await.map_err(ApiError::from)
+    }
+
     pub async fn update_item_status(&self, item_id: &str, req: UpdateItemStatusReq) -> Result<OrderItem, ApiError> {
         let dispatched_at = if req.status == "dispatched" { "datetime('now')" } else { "NULL" };
         sqlx::query(&format!("UPDATE pos_order_items SET status=?, dispatched_at={} WHERE id=?", dispatched_at))

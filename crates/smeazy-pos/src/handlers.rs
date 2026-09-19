@@ -35,6 +35,9 @@ pub async fn update_item_status(State(s): State<PosState>, Path(item_id): Path<S
 pub async fn apply_discount(State(s): State<PosState>, Path(order_id): Path<String>, Json(req): Json<ApplyDiscountReq>) -> Result<(StatusCode, Json<ApiResponse<PosOrder>>), ApiError> {
     Ok(ApiResponse::ok(s.apply_discount(&order_id, req).await?))
 }
+pub async fn set_item_discount(State(s): State<PosState>, Extension(ctx): Extension<TenantContext>, Path((order_id, item_id)): Path<(String, String)>, Json(req): Json<SetItemDiscountReq>) -> Result<(StatusCode, Json<ApiResponse<OrderItem>>), ApiError> {
+    Ok(ApiResponse::ok(s.set_item_discount(&ctx, &order_id, &item_id, req).await?))
+}
 pub async fn update_waitstaff(State(s): State<PosState>, Path(order_id): Path<String>, Json(req): Json<UpdateWaitstaffReq>) -> Result<(StatusCode, Json<ApiResponse<PosOrder>>), ApiError> {
     Ok(ApiResponse::ok(s.update_waitstaff(&order_id, req).await?))
 }
