@@ -223,7 +223,10 @@ export default function InventoryPage() {
   // ── Two-stage Processing board ───────────────────────────────────────────
   const stagedItems = items.filter(i => i.is_assembled && i.production_type==='staged')
   function setProcInput(id:string, key:'start'|'done', v:string) {
-    setProcInputs(p => ({ ...p, [id]: { start:'', done:'', ...p[id], [key]: v } }))
+    setProcInputs(p => {
+      const cur = p[id] ?? { start:'', done:'' }
+      return { ...p, [id]: { ...cur, [key]: v } }
+    })
   }
   async function procStart(item:any) {
     const q = parseFloat(procInputs[item.id]?.start ?? '')
