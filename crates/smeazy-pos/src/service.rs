@@ -76,6 +76,10 @@ impl PosService {
         // mark it Occupied. No-op for any other item.
         if let Some(ref iid) = req.item_id {
             let _ = self.accommodation.mark_occupied_if_room(&bid, iid, order_id).await;
+            // Reserve stock the moment the item is added to the order (not at
+            // checkout), so ingredients/products stop showing as available as
+            // soon as they're committed to an open order.
+            let _ = self.inventory.deduct_stock_on_sale(iid, req.quantity as f64, order_id).await;
         }
 
         sqlx::query_as::<_, OrderItem>("SELECT * FROM pos_order_items WHERE id=?")
@@ -89,6 +93,10 @@ impl PosService {
         sqlx::query("DELETE FROM pos_order_items WHERE id=?").bind(item_id).execute(&self.db).await.map_err(ApiError::from)?;
         sqlx::query("UPDATE pos_orders SET total_amount = total_amount - ? WHERE id=?")
             .bind(line_total).bind(order_id).execute(&self.db).await.map_err(ApiError::from)?;
+        // Return the stock this line had reserved.
+        if let Some(ref iid) = item.item_id {
+            let _ = self.inventory.release_stock_for_item(iid, item.quantity as f64, order_id).await;
+        }
         Ok(())
     }
 
@@ -118,6 +126,16 @@ impl PosService {
             .bind(new_qty).bind(item_id).execute(&self.db).await.map_err(ApiError::from)?;
         sqlx::query("UPDATE pos_orders SET total_amount = total_amount + ? WHERE id=?")
             .bind(delta).bind(order_id).execute(&self.db).await.map_err(ApiError::from)?;
+
+        // Reserve or release the stock difference so on-hand tracks the order.
+        let qty_delta = new_qty - item.quantity;
+        if let Some(ref iid) = item.item_id {
+            if qty_delta > 0 {
+                let _ = self.inventory.deduct_stock_on_sale(iid, qty_delta as f64, order_id).await;
+            } else if qty_delta < 0 {
+                let _ = self.inventory.release_stock_for_item(iid, (-qty_delta) as f64, order_id).await;
+            }
+        }
 
         let updated = sqlx::query_as::<_, OrderItem>("SELECT * FROM pos_order_items WHERE id=?")
             .bind(item_id).fetch_one(&self.db).await.map_err(ApiError::from)?;
@@ -307,15 +325,9 @@ impl PosService {
         sqlx::query("UPDATE kitchen_orders SET status='completed', completed_at=datetime('now') WHERE order_id=?")
             .bind(order_id).execute(&self.db).await.map_err(ApiError::from)?;
 
-        // Deduct inventory stock for linked items (sale movement) — goods are
-        // served whether the balance is settled in full or carried as a tab.
-        let items = sqlx::query_as::<_, OrderItem>("SELECT * FROM pos_order_items WHERE order_id=?")
-            .bind(order_id).fetch_all(&self.db).await.map_err(ApiError::from)?;
-        for item in &items {
-            if let Some(ref iid) = item.item_id {
-                let _ = self.inventory.deduct_stock_on_sale(iid, item.quantity as f64, order_id).await;
-            }
-        }
+        // Inventory was already deducted when each item was added to the order
+        // (reservation model, see add_item), so checkout does not deduct again —
+        // that would double-count. A voided order returns its reserved stock.
 
         // Revenue ledger entry (net of VAT is the business revenue; VAT is a liability)
         let ledger_id = Uuid::new_v4().to_string();
@@ -494,6 +506,14 @@ impl PosService {
         let result = sqlx::query("UPDATE pos_orders SET status='voided', closed_at=datetime('now') WHERE id=? AND business_id=? AND status='open'")
             .bind(order_id).bind(&bid).execute(&self.db).await.map_err(ApiError::from)?;
         if result.rows_affected() > 0 {
+            // Return all stock this order had reserved.
+            let items = sqlx::query_as::<_, OrderItem>("SELECT * FROM pos_order_items WHERE order_id=?")
+                .bind(order_id).fetch_all(&self.db).await.unwrap_or_default();
+            for it in &items {
+                if let Some(ref iid) = it.item_id {
+                    let _ = self.inventory.release_stock_for_item(iid, it.quantity as f64, order_id).await;
+                }
+            }
             // The order was cleared before payment — any Rooms tied to it were
             // never actually sold, so revert them to Ready.
             let _ = self.accommodation.revert_rooms_for_voided_order(&bid, order_id).await;

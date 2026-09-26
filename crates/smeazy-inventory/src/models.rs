@@ -25,6 +25,13 @@ pub struct InventoryItem {
     /// Units currently in the "processing" stage for a staged item (ingredients
     /// already deducted, not yet marked ready-to-eat). Always 0 for one_step items.
     pub wip_quantity: f64,
+    /// Computed (read-only) fields — populated by list/get queries, not stored.
+    /// For a one-step assembled product, how many finished units its current
+    /// ingredient stock can build (min over ingredients of floor(on_hand ÷ per-unit)).
+    /// NULL for direct-stock and staged items (which carry real quantity_on_hand).
+    pub buildable_qty: Option<f64>,
+    /// Number of recipe components — lets the UI tell "staged but no recipe yet" apart.
+    pub recipe_component_count: i64,
 }
 
 #[derive(Debug, Deserialize)]

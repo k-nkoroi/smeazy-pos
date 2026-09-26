@@ -295,7 +295,14 @@ export default function PosOrderPage() {
                     ) : <div className="w-full h-14 bg-slate-700 rounded-lg mb-2 flex items-center justify-center text-slate-500 text-2xl">🍽</div>}
                     <p className="text-white text-xs font-medium line-clamp-2 leading-tight">{product.name}</p>
                     <p className="text-brand-400 font-bold text-sm mt-1">KES {product.sale_price?.toLocaleString()}</p>
-                    {product.quantity_on_hand>0&&<p className="text-slate-500 text-xs">{product.quantity_on_hand} in stock</p>}
+                    {(() => {
+                      const tracked = product.track_inventory !== 0 && product.track_inventory !== false
+                      const avail = (product.is_assembled && product.production_type==='one_step') ? (product.buildable_qty ?? 0) : product.quantity_on_hand
+                      if (!tracked) return null
+                      return avail>0
+                        ? <p className="text-slate-500 text-xs">{avail} {product.is_assembled&&product.production_type==='one_step'?'buildable':'in stock'}</p>
+                        : <p className="text-red-400 text-xs font-medium">Out of stock</p>
+                    })()}
                   </button>
                 ))}
                 {filteredProducts.length===0&&<div className="col-span-4 text-center py-12 text-slate-500">No products found</div>}

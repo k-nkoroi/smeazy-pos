@@ -1,6 +1,14 @@
-# SMEazy POS — Offline-First Hospitality Point of Sale (v2.6)
+# SMEazy POS — Offline-First Hospitality Point of Sale (v2.7)
 
 A modular, production-grade point-of-sale platform built for hospitality businesses (bars, restaurants, pools, accommodation). **Fully offline-first**: the Rust binary embeds SQLite and auto-creates the database on first run — no Docker, no PostgreSQL, no network required. Ships as a native Windows desktop app via Tauri 2, or run the API + web frontend separately for development.
+
+## What's new in 2.7
+
+**Stock is reserved when an item is added to an order, not at checkout.** Previously an item only left inventory when the sale was completed, so something could still look "in stock" while it was actually committed to open orders on other tables. Now stock (or, for assembled products, their ingredients) is deducted the moment an item is added to an order, and returned if the line is removed, its quantity reduced, or the order voided. Checkout no longer deducts again. The POS product grid reflects this live and shows **Out of stock** when nothing is available.
+
+**Assembled products derive their cost and stock from their ingredients.** An assembled product's cost price is now computed automatically as the sum of its recipe ingredients' cost × the quantity each unit consumes — and it refreshes whenever the recipe changes or an ingredient's cost changes (so it's no longer hand-entered and never goes stale). A one-step assembled product's stock is shown as how many units its current ingredients can **build** (the limiting ingredient), in both the Inventory list and the POS, instead of a meaningless own-stock number.
+
+**Staged items now appear on the Processing board.** Marking an item's production type **Staged** now also marks it assembled, so it shows up under Inventory → **Processing** immediately. If it doesn't have a recipe yet, the card says so and points you to set its ingredients first.
 
 ## What's new in 2.6.2
 
@@ -95,8 +103,8 @@ This prints a **public key** and writes a **private key** file (optionally passw
 
 ### Build a versioned release
 ```bash
-git tag v2.6.2
-git push origin v2.6.2
+git tag v2.7.0
+git push origin v2.7.0
 ```
 The workflow builds, signs, and publishes a GitHub Release with the installer and `latest.json` attached — nothing further to do. Existing installs of the app will find this via **Settings → Check for Updates**.
 

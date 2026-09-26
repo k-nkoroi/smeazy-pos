@@ -207,7 +207,10 @@ export default function InventoryPage() {
   function renderPrice(item: any, field: 'sale_price'|'cost_price') {
     const val = item[field]
     const display = val!=null ? `KES ${val.toLocaleString()}` : '—'
-    if (!canEdit) return <span className={field==='cost_price'?'text-slate-500':''}>{display}</span>
+    // An assembled product's cost is derived from its recipe ingredients, so it
+    // isn't hand-edited here (editing would just be overwritten on the next recompute).
+    const derivedCost = field==='cost_price' && !!item.is_assembled
+    if (!canEdit || derivedCost) return <span className={clsx(field==='cost_price'&&'text-slate-500', derivedCost&&'italic')} title={derivedCost?'Derived from recipe ingredients':undefined}>{display}</span>
     const editing = priceEdit && priceEdit.id===item.id && priceEdit.field===field
     if (editing) {
       return <input autoFocus type="number" min="0" step="any" className="input py-1 w-24 text-sm"
@@ -219,9 +222,22 @@ export default function InventoryPage() {
     return <button disabled={savingPrice} onClick={()=>setPriceEdit({id:item.id, field, value: val!=null?String(val):''})}
       className={clsx('hover:underline decoration-dotted text-left', field==='cost_price'&&'text-slate-500')} title="Click to edit price (logged)">{display}</button>
   }
+  // Stock shown for an item. A one-step assembled product has no own stock — it
+  // shows how many units its ingredients can currently build.
+  function renderStock(item: any) {
+    if (item.is_assembled && item.production_type==='one_step') {
+      const b = item.buildable_qty ?? 0
+      return <span className="font-semibold" title="Buildable from current ingredient stock">{b} buildable</span>
+    }
+    return canEdit
+      ? <button onClick={()=>adjustStock(item)} className="font-semibold hover:underline">{item.quantity_on_hand} {item.unit_of_measure}</button>
+      : <button onClick={()=>setSpoilItem(item)} title="Record spoilage" className="font-semibold hover:underline decoration-dotted">{item.quantity_on_hand} {item.unit_of_measure}</button>
+  }
 
   // ── Two-stage Processing board ───────────────────────────────────────────
-  const stagedItems = items.filter(i => i.is_assembled && i.production_type==='staged')
+  // Anything the user has marked "staged" belongs here (setting staged now also
+  // marks the item assembled server-side); items still needing a recipe are flagged.
+  const stagedItems = items.filter(i => i.production_type==='staged')
   function setProcInput(id:string, key:'start'|'done', v:string) {
     setProcInputs(p => {
       const cur = p[id] ?? { start:'', done:'' }
@@ -569,11 +585,7 @@ export default function InventoryPage() {
                         <td className="px-4 py-3">{item.category_name?<span className="px-2 py-1 rounded-full text-xs bg-slate-100 text-slate-700">{item.category_name}</span>:'—'}</td>
                         <td className="px-4 py-3 font-semibold">{renderPrice(item,'sale_price')}</td>
                         <td className="px-4 py-3">{renderPrice(item,'cost_price')}</td>
-                        <td className="px-4 py-3">
-                          {canEdit
-                            ? <button onClick={()=>adjustStock(item)} className="font-semibold hover:underline">{item.quantity_on_hand} {item.unit_of_measure}</button>
-                            : <button onClick={()=>setSpoilItem(item)} title="Record spoilage" className="font-semibold hover:underline decoration-dotted">{item.quantity_on_hand} {item.unit_of_measure}</button>}
-                        </td>
+                        <td className="px-4 py-3">{renderStock(item)}</td>
                         <td className="px-4 py-3">
                           <div className="flex flex-col gap-1 items-start">
                             {item.is_assembled
@@ -715,12 +727,17 @@ export default function InventoryPage() {
                           <p className="font-bold text-lg text-emerald-700">{item.quantity_on_hand} {item.unit_of_measure}</p>
                         </div>
                       </div>
+                      {item.recipe_component_count===0 && (
+                        <div className="mb-3 text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
+                          No recipe yet — set its ingredients via the <strong>Recipe</strong> button in Products before you can process it.
+                        </div>
+                      )}
                       {canEdit ? (
                         <div className="space-y-2">
                           <div className="flex gap-2">
-                            <input type="number" min="0" step="any" className="input py-1.5 flex-1 text-sm" placeholder="Start qty"
+                            <input type="number" min="0" step="any" className="input py-1.5 flex-1 text-sm" placeholder="Start qty" disabled={item.recipe_component_count===0}
                               value={procInputs[item.id]?.start ?? ''} onChange={e=>setProcInput(item.id,'start',e.target.value)}/>
-                            <button onClick={()=>procStart(item)} disabled={procBusyId===item.id} className="btn-primary py-1.5 px-3 text-sm shrink-0 flex items-center gap-1"><PlayCircle className="w-4 h-4"/>Start</button>
+                            <button onClick={()=>procStart(item)} disabled={procBusyId===item.id || item.recipe_component_count===0} className="btn-primary py-1.5 px-3 text-sm shrink-0 flex items-center gap-1 disabled:opacity-50"><PlayCircle className="w-4 h-4"/>Start</button>
                           </div>
                           <div className="flex gap-2">
                             <input type="number" min="0" step="any" max={item.wip_quantity} className="input py-1.5 flex-1 text-sm" placeholder={`Complete (≤ ${item.wip_quantity})`}

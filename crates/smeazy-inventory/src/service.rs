@@ -46,7 +46,13 @@ impl InventoryService {
     pub async fn list_items_filtered(&self, business_id: &str, category_id: Option<&str>, item_type: Option<&str>) -> Result<Vec<InventoryItem>, ApiError> {
         let type_like = item_type; // exact match when provided
         sqlx::query_as::<_, InventoryItem>(
-            "SELECT i.*, c.name as category_name, c.department as category_department
+            "SELECT i.*, c.name as category_name, c.department as category_department,
+               (SELECT COUNT(*) FROM recipe_components rc WHERE rc.product_id=i.id AND rc.business_id=i.business_id) AS recipe_component_count,
+               CASE WHEN i.is_assembled=1 AND i.production_type='one_step'
+                 THEN CAST((SELECT COALESCE(MIN(CAST(ing.quantity_on_hand/rc.quantity AS INTEGER)),0)
+                            FROM recipe_components rc JOIN inventory_items ing ON ing.id=rc.ingredient_id
+                            WHERE rc.product_id=i.id AND rc.business_id=i.business_id AND rc.quantity>0) AS REAL)
+                 ELSE NULL END AS buildable_qty
              FROM inventory_items i LEFT JOIN product_categories c ON c.id=i.category_id
              WHERE i.business_id=? AND i.is_active=1
                AND (? IS NULL OR i.category_id = ?)
@@ -60,7 +66,14 @@ impl InventoryService {
 
     pub async fn get_item(&self, id: &str) -> Result<InventoryItem, ApiError> {
         sqlx::query_as::<_, InventoryItem>(
-            "SELECT i.*, c.name as category_name, c.department as category_department FROM inventory_items i LEFT JOIN product_categories c ON c.id=i.category_id WHERE i.id=?")
+            "SELECT i.*, c.name as category_name, c.department as category_department,
+               (SELECT COUNT(*) FROM recipe_components rc WHERE rc.product_id=i.id AND rc.business_id=i.business_id) AS recipe_component_count,
+               CASE WHEN i.is_assembled=1 AND i.production_type='one_step'
+                 THEN CAST((SELECT COALESCE(MIN(CAST(ing.quantity_on_hand/rc.quantity AS INTEGER)),0)
+                            FROM recipe_components rc JOIN inventory_items ing ON ing.id=rc.ingredient_id
+                            WHERE rc.product_id=i.id AND rc.business_id=i.business_id AND rc.quantity>0) AS REAL)
+                 ELSE NULL END AS buildable_qty
+             FROM inventory_items i LEFT JOIN product_categories c ON c.id=i.category_id WHERE i.id=?")
             .bind(id).fetch_one(&self.db).await.map_err(ApiError::from)
     }
 
@@ -77,6 +90,11 @@ impl InventoryService {
             .bind(if req.track_inventory.unwrap_or(true) { 1 } else { 0 })
             .bind(production_type)
             .execute(&self.db).await.map_err(ApiError::from)?;
+        // A staged item is by definition assembled (it's built from a recipe and
+        // has a processing stage), so it appears on the Processing board.
+        if production_type == "staged" {
+            let _ = sqlx::query("UPDATE inventory_items SET is_assembled=1 WHERE id=?").bind(&id).execute(&self.db).await;
+        }
         self.get_item(&id).await
     }
 
@@ -88,7 +106,18 @@ impl InventoryService {
             .bind(req.is_active.map(|b| if b { 1i64 } else { 0i64 }))
             .bind(&req.image_url).bind(&req.tags).bind(production_type).bind(id).bind(business_id)
             .execute(&self.db).await.map_err(ApiError::from)?;
-        self.get_item(id).await
+        // Switching an item to Staged makes it assembled, so it shows on the
+        // Processing board (it still needs a recipe before it can be processed).
+        if production_type == Some("staged") {
+            let _ = sqlx::query("UPDATE inventory_items SET is_assembled=1 WHERE id=? AND business_id=?").bind(id).bind(business_id).execute(&self.db).await;
+        }
+        let item = self.get_item(id).await?;
+        // If this is an ingredient whose cost changed, refresh the cost of every
+        // assembled product that uses it (assembled cost = sum of ingredient costs).
+        if item.item_type == "assembly" && req.cost_price.is_some() {
+            self.recompute_costs_using_ingredient(business_id, id).await;
+        }
+        Ok(item)
     }
 
     /// Quick sale/cost price change from the Inventory list, logged with its
@@ -120,7 +149,12 @@ impl InventoryService {
         smeazy_common::audit::audit(&self.db, smeazy_common::audit::AuditEntry::new(&bid, "inventory.price_update", "inventory_item", summary)
             .actor(ctx.user_id.to_string()).entity(item_id, after.name.clone())
             .meta(&serde_json::json!({ "old_sale": before.sale_price, "new_sale": after.sale_price, "old_cost": before.cost_price, "new_cost": after.cost_price }))).await;
-        Ok(after)
+        // Changing an ingredient's cost re-derives the cost of every assembled
+        // product built from it.
+        if after.item_type == "assembly" && before.cost_price != after.cost_price {
+            self.recompute_costs_using_ingredient(&bid, item_id).await;
+        }
+        self.get_item(item_id).await
     }
 
     pub async fn adjust_stock(&self, ctx: &TenantContext, item_id: &str, req: AdjustStockReq) -> Result<InventoryItem, ApiError> {
@@ -175,7 +209,9 @@ impl InventoryService {
         // stock in quantity_on_hand (the processed/ready-to-eat units), so they're
         // included just like a plain direct-stock product.
         let rows = sqlx::query_as::<_, InventoryItem>(
-            "SELECT i.*, c.name as category_name, c.department as category_department FROM inventory_items i LEFT JOIN product_categories c ON c.id=i.category_id WHERE i.business_id=? AND i.is_active=1 AND i.track_inventory=1 AND (i.is_assembled=0 OR i.production_type='staged') AND i.quantity_on_hand <= i.reorder_level ORDER BY i.quantity_on_hand ASC")
+            "SELECT i.*, c.name as category_name, c.department as category_department,
+               0 AS recipe_component_count, NULL AS buildable_qty
+             FROM inventory_items i LEFT JOIN product_categories c ON c.id=i.category_id WHERE i.business_id=? AND i.is_active=1 AND i.track_inventory=1 AND (i.is_assembled=0 OR i.production_type='staged') AND i.quantity_on_hand <= i.reorder_level ORDER BY i.quantity_on_hand ASC")
             .bind(business_id).fetch_all(&self.db).await.map_err(ApiError::from)?;
         Ok(rows.into_iter().map(|r| LowStockAlert {
             item_id: r.id, sku: r.sku, name: r.name,
@@ -225,6 +261,92 @@ impl InventoryService {
                 .bind(take).bind(&batch_id).execute(&self.db).await;
             remaining -= take;
         }
+    }
+
+    /// Release stock that was reserved when an item was added to an order, when
+    /// that item is removed, its quantity reduced, or the whole order voided.
+    /// The exact inverse of `deduct_stock_on_sale`: a one-step assembled product
+    /// returns its ingredients; a direct/staged product returns its own stock.
+    pub async fn release_stock_for_item(&self, item_id: &str, quantity: f64, order_id: &str) -> Result<(), ApiError> {
+        if quantity <= 0.0 { return Ok(()); }
+        let bid: Option<String> = sqlx::query_scalar("SELECT business_id FROM inventory_items WHERE id=?")
+            .bind(item_id).fetch_optional(&self.db).await.map_err(ApiError::from)?;
+        if let Some(ref bid) = bid {
+            let restored = self.restore_ingredients(bid, item_id, quantity, "release", Some(order_id)).await?;
+            if restored { return Ok(()); }
+        }
+        sqlx::query("UPDATE inventory_items SET quantity_on_hand = quantity_on_hand + ?, updated_at=datetime('now') WHERE id=? AND track_inventory=1")
+            .bind(quantity).bind(item_id).execute(&self.db).await.map_err(ApiError::from)?;
+        sqlx::query("INSERT INTO inventory_movements (id,item_id,order_id,movement_type,delta_qty) VALUES (?,?,?,'release',?)")
+            .bind(Uuid::new_v4().to_string()).bind(item_id).bind(order_id).bind(quantity)
+            .execute(&self.db).await.map_err(ApiError::from)?;
+        if let Some(ref bid) = bid { self.restore_batches(bid, item_id, quantity).await; }
+        Ok(())
+    }
+
+    /// Inverse of `deplete_ingredients` — puts ingredient stock back for a
+    /// one-step assembled product being un-ordered. Returns true if it handled
+    /// the item (i.e. it was a one-step assembled product), false otherwise.
+    pub async fn restore_ingredients(&self, business_id: &str, product_id: &str, units: f64, movement: &str, order_id: Option<&str>) -> Result<bool, ApiError> {
+        let row: Option<(i64, String)> = sqlx::query_as(
+            "SELECT is_assembled, production_type FROM inventory_items WHERE id=? AND business_id=?")
+            .bind(product_id).bind(business_id).fetch_optional(&self.db).await.map_err(ApiError::from)?;
+        let is_one_step_assembled = match row { Some((1, pt)) => pt == "one_step", _ => false };
+        if !is_one_step_assembled { return Ok(false); }
+        let components = sqlx::query_as::<_, (String, f64)>(
+            "SELECT ingredient_id, quantity FROM recipe_components WHERE product_id=? AND business_id=?")
+            .bind(product_id).bind(business_id).fetch_all(&self.db).await.map_err(ApiError::from)?;
+        for (ing_id, per_unit) in components {
+            let restored = per_unit * units;
+            sqlx::query("UPDATE inventory_items SET quantity_on_hand = quantity_on_hand + ?, updated_at=datetime('now') WHERE id=? AND track_inventory=1")
+                .bind(restored).bind(&ing_id).execute(&self.db).await.map_err(ApiError::from)?;
+            sqlx::query("INSERT INTO inventory_movements (id,item_id,order_id,movement_type,delta_qty,notes) VALUES (?,?,?,?,?,?)")
+                .bind(Uuid::new_v4().to_string()).bind(&ing_id).bind(order_id).bind(movement).bind(restored)
+                .bind(format!("Ingredient returned to stock ({} units un-ordered)", units))
+                .execute(&self.db).await.map_err(ApiError::from)?;
+            self.restore_batches(business_id, &ing_id, restored).await;
+        }
+        Ok(true)
+    }
+
+    /// Add returned stock back onto the most-recently-received open batch, so the
+    /// batch overlay tracks the on-hand level after a cancellation. Best-effort.
+    pub async fn restore_batches(&self, business_id: &str, item_id: &str, quantity: f64) {
+        if quantity <= 0.0 { return; }
+        let batch: Option<String> = sqlx::query_scalar(
+            "SELECT id FROM inventory_batches WHERE business_id=? AND item_id=? ORDER BY received_at DESC LIMIT 1")
+            .bind(business_id).bind(item_id).fetch_optional(&self.db).await.ok().flatten();
+        if let Some(id) = batch {
+            let _ = sqlx::query("UPDATE inventory_batches SET quantity = quantity + ?, updated_at=datetime('now') WHERE id=?")
+                .bind(quantity).bind(&id).execute(&self.db).await;
+        }
+    }
+
+    // ── Assembled-product cost derivation ─────────────────────────────────────
+    /// Set an assembled product's cost_price to the sum of its recipe
+    /// ingredients' cost × per-unit quantity. No-op if the product has no recipe.
+    pub async fn recompute_assembled_cost(&self, business_id: &str, product_id: &str) {
+        let cost: Option<f64> = sqlx::query_scalar::<_, Option<f64>>(
+            "SELECT SUM(rc.quantity * COALESCE(ing.cost_price,0)) FROM recipe_components rc JOIN inventory_items ing ON ing.id=rc.ingredient_id WHERE rc.product_id=? AND rc.business_id=?")
+            .bind(product_id).bind(business_id).fetch_one(&self.db).await.ok().flatten();
+        if let Some(c) = cost {
+            let _ = sqlx::query("UPDATE inventory_items SET cost_price=?, updated_at=datetime('now') WHERE id=? AND business_id=? AND is_assembled=1")
+                .bind(c).bind(product_id).bind(business_id).execute(&self.db).await;
+        }
+    }
+    /// Refresh the cost of every assembled product that uses this ingredient.
+    pub async fn recompute_costs_using_ingredient(&self, business_id: &str, ingredient_id: &str) {
+        let products = sqlx::query_scalar::<_, String>(
+            "SELECT DISTINCT product_id FROM recipe_components WHERE ingredient_id=? AND business_id=?")
+            .bind(ingredient_id).bind(business_id).fetch_all(&self.db).await.unwrap_or_default();
+        for p in products { self.recompute_assembled_cost(business_id, &p).await; }
+    }
+    /// Refresh the derived cost of every assembled product in the business.
+    pub async fn recompute_all_assembled_costs(&self, business_id: &str) {
+        let ids = sqlx::query_scalar::<_, String>(
+            "SELECT id FROM inventory_items WHERE business_id=? AND is_assembled=1")
+            .bind(business_id).fetch_all(&self.db).await.unwrap_or_default();
+        for p in ids { self.recompute_assembled_cost(business_id, &p).await; }
     }
 
     // ── CSV import/export ───────────────────────────────────────────────────
@@ -334,6 +456,9 @@ impl InventoryService {
                 }
             }
         }
+        // An import can change ingredient costs in bulk, so re-derive the cost of
+        // every assembled product afterwards.
+        self.recompute_all_assembled_costs(business_id).await;
         Ok(ImportResult { imported, updated, skipped, errors })
     }
 
@@ -637,6 +762,9 @@ impl InventoryService {
                 .bind(Uuid::new_v4().to_string()).bind(&bid).bind(product_id).bind(&c.ingredient_id).bind(c.quantity)
                 .execute(&self.db).await.map_err(ApiError::from)?;
         }
+        // Derive this assembled product's cost from its ingredients now that the
+        // recipe is set.
+        self.recompute_assembled_cost(&bid, product_id).await;
         let recipe = self.get_recipe(&bid, product_id).await?;
         smeazy_common::audit::audit(&self.db, smeazy_common::audit::AuditEntry::new(&bid, "recipe.update", "recipe", format!("Set recipe for {} ({} ingredients)", recipe.product_name, recipe.components.len()))
             .actor(ctx.user_id.to_string()).entity(product_id, recipe.product_name.clone())).await;
